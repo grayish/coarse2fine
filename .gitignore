@@ -4,3 +4,6 @@ venv/
 
 # Jupyter notebook
 .ipynb_checkpoints
+
+# Binary
+*.png
