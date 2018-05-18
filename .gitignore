@@ -1,9 +1,16 @@
 # PyCharm
 venv/
 .idea/
+log/
 
 # Jupyter notebook
 .ipynb_checkpoints
 
+# Python
+__pycache__/
+
 # Binary
 *.png
+
+# Human3.6M
+H36M.conf
