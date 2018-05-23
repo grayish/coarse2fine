@@ -2,5 +2,9 @@
   "annotation_path" : "D:/data/Human3.6M/converted/annot/",
   "image_path" : "D:/data/Human3.6M/converted/",
   "subjects" : [1, 5, 6, 7, 8, 9, 11],
-  "task" : "train"
+  "task" : "train",
+  "num_parts" : 17,
+  "heatmap_xy_coefficient" : 2,
+  "voxel_xy_resolution" : 64,
+  "voxel_z_resolutions" : [1, 2, 4, 64]
 }
