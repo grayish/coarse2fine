@@ -86,5 +86,7 @@ class Data(torch_data.Dataset):
                     self.voxel_xy_resolution, voxel_z_coarse_resolution,
                     xy[part_idx], z,
                     self.heatmap_xy_coefficient, heatmap_z_coefficient)
+            voxel = voxel.transpose(2, 0, 1)
             voxels.append(voxel)
+        image = image.transpose(2, 0, 1)
         return image, voxels
