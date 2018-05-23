@@ -14,3 +14,6 @@ __pycache__/
 
 # Human3.6M
 H36M.conf
+
+# Log
+*.log
