@@ -110,7 +110,7 @@ class StackedHourglass(nn.Module):
         init_conv = self.init_conv(x)
 
         inter = init_conv
-        out_voxels = None
+        out_voxels = list()
         layers = zip(self.hourglasses,
                      self.prev_intermediate_layers,
                      self.voxel_intermediate_layers,
@@ -121,24 +121,18 @@ class StackedHourglass(nn.Module):
 
             hg = hg(inter)
             prev = prev(hg)
-            voxel = voxel(prev)  # [BJHW], J: #joints
+            voxel = voxel(prev)  # BCHW
             after = after(voxel)
             skip = skip(prev)
 
             inter = prev_inter + after + skip
 
-            voxel_unsqueezed = voxel.unsqueeze(0)  # ['1'BJWH]
-
             # stacking intermediate heatmaps for intermediate supervision
-            if out_voxels is not None:
-                out_voxels = torch.cat([out_voxels, voxel_unsqueezed], 0)  # [SBJHW], S: #stacks
-            else:
-                out_voxels = voxel_unsqueezed
+            out_voxels.append(voxel)
 
         hg = self.hourglasses[-1](inter)
         prev = self.prev_intermediate_layers[-1](hg)
         voxel = self.voxel_intermediate_layers[-1](prev)
-        voxel_unsqueezed = voxel.unsqueeze(0)  # ['1'BJHW]
-        out_voxels = torch.cat([out_voxels, voxel_unsqueezed], 0)  # [SBJHW]
+        out_voxels.append(voxel)
 
         return out_voxels

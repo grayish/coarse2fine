@@ -30,7 +30,6 @@ class Data(torch_data.Dataset):
             image_name_file = join(annotation_path, '%s_images.txt' % task)
             self.data[str(task)][str(Annotation.Image)] = np.genfromtxt(image_name_file, dtype=str)
 
-    @lru_cache(maxsize=1)
     def __len__(self):
         return len(self.data[str(self.task)][str(Annotation.Image)])
 
@@ -62,7 +61,7 @@ class Data(torch_data.Dataset):
         image_xy_resolution = 200 * scale
 
         # Crop RGB image.
-        image = skimage.io.imread('%s/%s/%s' % (self.image_path, subject, image_name))
+        image = skimage.img_as_float(skimage.io.imread('%s/%s/%s' % (self.image_path, subject, image_name)))
         image = crop_image(image, center, scale, 0, 256)
         # imageio.imwrite('rgb.png', image)
 
