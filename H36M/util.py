@@ -89,7 +89,7 @@ def crop_image(image, center, scale, rotate, resolution):
 
 
 def generate_voxel(voxel_xy_resolution, voxel_z_resolution, xy, z, heatmap_xy_coefficient, heatmap_z_coefficient):
-    volume = np.ndarray(shape=(voxel_xy_resolution, voxel_xy_resolution, voxel_z_resolution), dtype=np.float64)
+    volume = np.zeros(shape=(voxel_xy_resolution, voxel_xy_resolution, voxel_z_resolution), dtype=np.float64)
     xy_view = generate_heatmap(size=voxel_xy_resolution, y0=xy[1], x0=xy[0], sigma=heatmap_xy_coefficient)
     z_view = gaussian(heatmap_z_coefficient)[math.ceil(heatmap_z_coefficient / 2) - 1]
     cnt = 0

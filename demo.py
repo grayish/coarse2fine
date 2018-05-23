@@ -49,7 +49,7 @@ if __name__ == "__main__":
 
     log.info('Creating model...')
     model = StackedHourglass(config.voxel_z_resolutions, 256, config.num_parts)
-    optimizer = torch.optim.RMSprop(model.parameters(), lr=2.5e-4)
+    optimizer = torch.optim.RMSprop(model.parameters(), lr=2.5e-5)
     step = np.zeros([1], dtype=np.uint32)
     log.info('Done')
 
@@ -110,9 +110,9 @@ if __name__ == "__main__":
                 assert viz.check_connection()
 
                 loss_window =  viz.line(X=step,
-                                Y=loss.data.cpu().numpy(),
-                                win=loss_window,
-                                update='append' if loss_window is not None else None)
+                    Y=loss.data.cpu().numpy(),
+                    win=loss_window,
+                    update='append' if loss_window is not None else None)
 
         log.info('Saving the trained model... (%d epoch, %d step)' % (epoch, step))
         pretrained_model = os.path.join(config.pretrained_path, '%d.save' % epoch)

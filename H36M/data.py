@@ -34,7 +34,7 @@ class Data(torch_data.Dataset):
         return len(self.data[str(self.task)][str(Annotation.Image)])
 
     def __getitem__(self, index):
-        raw_data = (self.data[str(self.task)][str(Annotation.Image)][index], )
+        raw_data = (self.data[str(self.task)][str(Annotation.Image)][index],)
         for annotation in annotations[str(self.task)]:
             raw_data = raw_data + (self.data[str(self.task)][str(annotation)][index],)
 
@@ -75,13 +75,14 @@ class Data(torch_data.Dataset):
             # Convert the coordinate from a RGB image to a cropped RGB image.
             xy = self.voxel_xy_resolution * (part - center) / image_xy_resolution + self.voxel_xy_resolution * 0.5
 
-            voxel = np.ndarray(shape=(self.voxel_xy_resolution, self.voxel_xy_resolution, len(part) * voxel_z_coarse_resolution))
+            voxel = np.zeros(shape=(self.voxel_xy_resolution, self.voxel_xy_resolution,
+                                    len(part) * voxel_z_coarse_resolution))
             for part_idx in range(len(part)):
                 # zind range (1, 64)
                 # z range (0, 63)
                 z = math.ceil(zind[part_idx] * voxel_z_coarse_resolution / voxel_z_fine_resolution) - 1
-                voxel[:, :,
-                part_idx * voxel_z_coarse_resolution: (part_idx + 1) * voxel_z_coarse_resolution] = generate_voxel(
+                voxel[:, :, part_idx * voxel_z_coarse_resolution: (part_idx + 1) * voxel_z_coarse_resolution] \
+                    = generate_voxel(
                     self.voxel_xy_resolution, voxel_z_coarse_resolution,
                     xy[part_idx], z,
                     self.heatmap_xy_coefficient, heatmap_z_coefficient)
