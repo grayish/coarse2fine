@@ -59,6 +59,8 @@ class Data(torch_data.Dataset):
 
         # Pre-calculate constants.
         image_xy_resolution = 200 * scale
+        scale_factor = 2 ** rand(0.25)
+        rotate_factor = rand(30) if random.random() <= 0.4 else 0
 
         # Crop RGB image.
         image = skimage.img_as_float(skimage.io.imread('%s/%s/%s' % (self.image_path, subject, image_name)))
@@ -86,7 +88,23 @@ class Data(torch_data.Dataset):
                     self.voxel_xy_resolution, voxel_z_coarse_resolution,
                     xy[part_idx], z,
                     self.heatmap_xy_coefficient, heatmap_z_coefficient)
+
+            if self.task == Task.Train:
+                voxel = crop_image(
+                    voxel,
+                    [(self.voxel_xy_resolution - 1) / 2, (self.voxel_xy_resolution - 1) / 2],
+                    self.voxel_xy_resolution * scale * scale_factor / 200,
+                    rotate_factor,
+                    self.voxel_xy_resolution)
             voxel = voxel.transpose(2, 0, 1)
             voxels.append(voxel)
+
+        if self.task == Task.Train:
+            image = crop_image(
+                image,
+                [(256 - 1) / 2, (256 - 1) / 2],
+                256 * scale * scale_factor / 200,
+                rotate_factor,
+                256)
         image = image.transpose(2, 0, 1)
         return image, voxels

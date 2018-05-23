@@ -1,5 +1,6 @@
 import numpy as np
 import math
+import random
 import skimage
 import skimage.io
 import skimage.transform
@@ -44,7 +45,7 @@ def generate_heatmap(size, y0, x0, sigma=1):
 
 def crop_image(image, center, scale, rotate, resolution):
     center = Vector2(center)  # assign new array
-    height, width, _ = image.shape
+    height, width, channel = image.shape
     crop_ratio = 200 * scale / resolution
     if crop_ratio >= 2:  # if box size is greater than two time of resolution px
         # scale down image
@@ -74,7 +75,7 @@ def crop_image(image, center, scale, rotate, resolution):
     src = [max(0, ul.y), min(height, br.y), max(0, ul.x), min(width, br.x)]
     dst = [max(0, -ul.y), min(height, br.y) - ul.y, max(0, -ul.x), min(width, br.x) - ul.x]
 
-    new_image = np.zeros([br.y - ul.y, br.x - ul.x, 3], dtype=np.float64)
+    new_image = np.zeros([br.y - ul.y, br.x - ul.x, channel], dtype=np.float64)
     new_image[dst[0]:dst[1], dst[2]:dst[3], :] = image[src[0]:src[1], src[2]:src[3], :]
 
     if rotate != 0:
@@ -110,3 +111,7 @@ def decode_image_name(image_name):
     camera, frame = camera_frame.split('_')
 
     return subject, action, camera, frame
+
+
+def rand(x):
+    return max(-2 * x, min(2 * x, random.gauss(0, 1) * x))

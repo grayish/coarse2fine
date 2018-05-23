@@ -49,7 +49,7 @@ if __name__ == "__main__":
 
     log.info('Creating model...')
     model = StackedHourglass(config.voxel_z_resolutions, 256, config.num_parts)
-    optimizer = torch.optim.RMSprop(model.parameters(), lr=2.5e-5)
+    optimizer = torch.optim.RMSprop(model.parameters(), lr=2.5e-4)
     step = np.zeros([1], dtype=np.uint32)
     log.info('Done')
 
@@ -102,15 +102,14 @@ if __name__ == "__main__":
 
                 optimizer.step()
 
-                progress.set_postfix(loss=loss.data[0])
+                progress.set_postfix(loss=float(loss.data))
                 progress.update(config.batch)
 
                 step = step + config.batch
 
                 assert viz.check_connection()
-
                 loss_window =  viz.line(X=step,
-                    Y=loss.data.cpu().numpy(),
+                    Y=np.array([float(loss.data)]),
                     win=loss_window,
                     update='append' if loss_window is not None else None)
 
