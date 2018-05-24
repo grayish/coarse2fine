@@ -2,6 +2,7 @@ import json
 import H36M
 import torch
 import torch.nn as nn
+import skimage.transform
 import os
 import numpy as np
 from tqdm import tqdm as tqdm
@@ -12,6 +13,59 @@ from H36M.task import Task
 from torch.utils.data import DataLoader
 from torch.autograd import Variable
 from visdom import Visdom
+
+def merge_to_color_heatmap(batch_heatmaps, h_format='NCHW'):
+    Color = torch.cuda.FloatTensor(
+        [[0, 0, 0.5],
+         [0, 0, 1],
+         [0, 1, 0],
+         [1, 1, 0],
+         [1, 0, 0]]
+    )
+
+    if h_format == 'NHWC':
+        batch_heatmaps = batch_heatmaps.permute(0, 3, 1, 2).contiguous()
+
+    batch, joints, height, width = batch_heatmaps.size()
+
+    heatmaps = batch_heatmaps.clamp(0, 1.).view(-1)
+
+    frac = torch.div(heatmaps, 0.25)
+    lower_indices, upper_indices = torch.floor(frac).long(), torch.ceil(frac).long()
+
+    t = frac - torch.floor(frac)
+    t = t.view(-1, 1)
+
+    k = Color.index_select(0, lower_indices)
+    k_1 = Color.index_select(0, upper_indices)
+
+    color_heatmap = (1.0 - t) * k + t * k_1
+    color_heatmap = color_heatmap.view(batch, joints, height, width, 3)
+    color_heatmap = color_heatmap.permute(0, 4, 2, 3, 1) # B3HWC
+    color_heatmap, _ = torch.max(color_heatmap, 4) # B3HW
+
+    return color_heatmap
+
+
+def draw_merged_image(heatmaps, images, window):
+    assert viz.check_connection()
+
+    heatmaps = merge_to_color_heatmap(heatmaps.data)
+    heatmaps = heatmaps.permute(0, 2, 3, 1).cpu()  # NHWC
+
+    resized_heatmaps = list()
+    for idx, ht in enumerate(heatmaps):
+        color_ht = skimage.transform.resize(ht.numpy(), (256, 256), mode='constant')
+        resized_heatmaps.append(color_ht)
+
+    resized_heatmaps = np.stack(resized_heatmaps, axis=0)
+
+    images = images.transpose(0, 2, 3, 1) * 0.6
+    overlayed_image = np.clip(images + resized_heatmaps * 0.4, 0, 1.)
+
+    overlayed_image = overlayed_image.transpose(0, 3, 1, 2)
+
+    return viz.images(tensor=overlayed_image, nrow=3, win=window)
 
 viz = Visdom()
 
@@ -43,7 +97,7 @@ if __name__ == "__main__":
             voxel_z_resolutions=config.voxel_z_resolutions,
         ),
         config.batch, shuffle=True, pin_memory=True,
-        # num_workers=config.workers,
+        num_workers=config.workers,
     )
     log.info('Done')
 
@@ -103,7 +157,7 @@ if __name__ == "__main__":
                 optimizer.step()
 
                 progress.set_postfix(loss=float(loss.data))
-                progress.update(config.batch)
+                progress.update(1)
 
                 step = step + config.batch
 
@@ -112,6 +166,11 @@ if __name__ == "__main__":
                     Y=np.array([float(loss.data)]),
                     win=loss_window,
                     update='append' if loss_window is not None else None)
+
+                out = outputs[-1].squeeze().contiguous()
+                images = images.cpu().numpy()
+                out_image_window = draw_merged_image(voxels[-1], images.copy(), out_image_window)
+                gt_image_window = draw_merged_image(out, images.copy(), gt_image_window)
 
         log.info('Saving the trained model... (%d epoch, %d step)' % (epoch, step))
         pretrained_model = os.path.join(config.pretrained_path, '%d.save' % epoch)

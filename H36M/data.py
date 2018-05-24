@@ -58,14 +58,18 @@ class Data(torch_data.Dataset):
         subject, _, camera, _ = decode_image_name(image_name)
 
         # Pre-calculate constants.
+        rotate = 0.0
+
+        if self.task == Task.Train:
+            scale = scale * 2 ** rand(0.25)
+            rotate = rand(30) if random.random() <= 0.4 else 0
+
         image_xy_resolution = 200 * scale
-        scale_factor = 2 ** rand(0.25)
-        rotate_factor = rand(30) if random.random() <= 0.4 else 0
+        resize_ratio = image_xy_resolution / 64
 
         # Crop RGB image.
         image = skimage.img_as_float(skimage.io.imread('%s/%s/%s' % (self.image_path, subject, image_name)))
-        image = crop_image(image, center, scale, 0, 256)
-        # imageio.imwrite('rgb.png', image)
+        image = crop_image(image, center, scale, rotate, 256)
 
         # Build voxel.
         voxel_z_fine_resolution = self.voxel_z_resolutions[-1]
@@ -77,34 +81,36 @@ class Data(torch_data.Dataset):
             # Convert the coordinate from a RGB image to a cropped RGB image.
             xy = self.voxel_xy_resolution * (part - center) / image_xy_resolution + self.voxel_xy_resolution * 0.5
 
+            if rotate != 0.0:
+                xy = xy - self.voxel_xy_resolution / 2
+                cos = math.cos(rotate * math.pi / 180)
+                sin = math.sin(rotate * math.pi / 180)
+                x = sin * xy[:, 1] + cos * xy[:, 0]
+                y = cos * xy[:, 1] - sin * xy[:, 0]
+                xy[:, 0] = x
+                xy[:, 1] = y
+                xy = xy + self.voxel_xy_resolution / 2
+
             voxel = np.zeros(shape=(self.voxel_xy_resolution, self.voxel_xy_resolution,
                                     len(part) * voxel_z_coarse_resolution))
             for part_idx in range(len(part)):
                 # zind range (1, 64)
                 # z range (0, 63)
                 z = math.ceil(zind[part_idx] * voxel_z_coarse_resolution / voxel_z_fine_resolution) - 1
+                if xy[part_idx, 0] < 0 or self.voxel_xy_resolution <= xy[part_idx, 0] \
+                        or xy[part_idx, 1] < 0 or self.voxel_xy_resolution <= xy[part_idx, 1]:
+                    continue
                 voxel[:, :, part_idx * voxel_z_coarse_resolution: (part_idx + 1) * voxel_z_coarse_resolution] \
                     = generate_voxel(
                     self.voxel_xy_resolution, voxel_z_coarse_resolution,
                     xy[part_idx], z,
                     self.heatmap_xy_coefficient, heatmap_z_coefficient)
-
-            if self.task == Task.Train:
-                voxel = crop_image(
-                    voxel,
-                    [(self.voxel_xy_resolution - 1) / 2, (self.voxel_xy_resolution - 1) / 2],
-                    self.voxel_xy_resolution * scale * scale_factor / 200,
-                    rotate_factor,
-                    self.voxel_xy_resolution)
             voxel = voxel.transpose(2, 0, 1)
             voxels.append(voxel)
-
         if self.task == Task.Train:
-            image = crop_image(
-                image,
-                [(256 - 1) / 2, (256 - 1) / 2],
-                256 * scale * scale_factor / 200,
-                rotate_factor,
-                256)
+            image[:, :, 0] *= random.uniform(0.6, 1.4)
+            image[:, :, 1] *= random.uniform(0.6, 1.4)
+            image[:, :, 2] *= random.uniform(0.6, 1.4)
+        image = np.clip(image, 0, 1)
         image = image.transpose(2, 0, 1)
         return image, voxels

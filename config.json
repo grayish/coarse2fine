@@ -9,6 +9,6 @@
   "voxel_xy_resolution" : 64,
   "voxel_z_resolutions" : [1, 2, 4, 64],
   "batch" : 12,
-  "workers" : 0,
+  "workers" : 8,
   "epoch" : 5
 }
