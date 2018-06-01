@@ -1,17 +1,17 @@
+import itertools
 import math
 import os
 import pickle
 import random
-import torch
 
 import cv2
-import numpy as np
+import torch
 import torch.utils.data as torch_data
 from PIL import Image
 from torchvision import transforms
 from vectormath import Vector2
 
-from H36M.util import decode_image_name, rand, set_voxel
+from H36M.util import decode_image_name, rand, gaussian_3d
 from .annotation import annotations, Annotation
 from .task import tasks
 
@@ -21,21 +21,32 @@ T = transforms.Compose([
 
 
 class Data(torch_data.Dataset):
-
-    def __init__(self, annotation_path, image_path, subjects, task,
+    def __init__(self, annotation_path, image_path, subjects, task, joints,
                  heatmap_xy_coefficient, voxel_xy_resolution, voxel_z_resolutions):
-        self.voxel_z_res_list = voxel_z_resolutions
+        self.voxel_z_res_list = torch.FloatTensor(voxel_z_resolutions)
         self.voxel_xy_res = voxel_xy_resolution
         self.heatmap_xy_coeff = heatmap_xy_coefficient
         self.task = task
         self.subjects = subjects
+        self.joints = joints
         self.image_path = image_path
+
+        # initialize
+        self.heatmap_z_coeff = 2 * torch.floor(
+            (6 * self.heatmap_xy_coeff * self.voxel_z_res_list / self.voxel_z_res_list[-1] + 1) / 2) + 1
+
+        self.gaussians = list()
+        for z_coeff in self.heatmap_z_coeff:
+            gau = gaussian_3d(3 * 2 * self.heatmap_xy_coeff + 1, z_coeff)
+            self.gaussians.append(gau)
+
+        self.voxels = list()
+        for z_res in self.voxel_z_res_list:
+            vx = torch.zeros(self.joints, z_res, self.voxel_xy_res, self.voxel_xy_res)
+            self.voxels.append(vx)
+
+        # read dataset appendix
         self.data = dict()
-
-        self.dummy = torch.zeros((17, 71, 64, 64))
-        # self.dummy = np.zeros((len(part), z_res_cumsum[-1], self.voxel_xy_res, self.voxel_xy_res), dtype=np.float32)  # JVHW
-        # self.dummy = np.zeros((17, 71, 64, 64), dtype=np.float32)  # JVHW
-
         for task in tasks:
             self.data[str(task)] = pickle.load(open("./%s.bin" % task, 'rb'))
 
@@ -71,9 +82,10 @@ class Data(torch_data.Dataset):
 
         image = self._get_crop_image(image_path, center, scale, angle)
 
-        coords = self._get_voxels_coords(part, center, image_xy_res, angle, zind)
+        # coords = self._get_voxels_coords(part, center, image_xy_res, angle, zind)
+        voxels = self._get_voxels(part, center, image_xy_res, angle, zind)
 
-        return T(image), coords
+        return T(image), voxels
 
     def _get_crop_image(self, image_path, center, scale, angle, resolution=256):
         image = Image.open(image_path)
@@ -166,45 +178,104 @@ class Data(torch_data.Dataset):
 
         return new_image
 
-    def _get_voxels(self, part, center, image_xy_res, angle, zind):
-        z_res_cumsum = np.insert(np.cumsum(self.voxel_z_res_list), 0, 0)
+    def _get_voxels(self, part, center, image_xy_res, angle, zidx):
+        part = torch.from_numpy(part).float()
+        center = torch.from_numpy(center).float()
+        zidx = torch.from_numpy(zidx).float()
 
-        # Build voxel.
-        voxel_z_fine_res = self.voxel_z_res_list[-1]
-        for idx, z_res in enumerate(self.voxel_z_res_list):
-            # heatmap_z_coefficient is 1, 1, 1, 3, 5, 7, 13 for 1, 2, 4, 8, 16, 32, 64.
-            heatmap_z_coeff = 2 * math.floor((6 * self.heatmap_xy_coeff * z_res / voxel_z_fine_res + 1) / 2) + 1
+        # for vx in self.voxels:
+        #     vx.zero_()
+        voxels = list()
+        for z_res in self.voxel_z_res_list:
+            vx = torch.zeros(self.joints, z_res, self.voxel_xy_res, self.voxel_xy_res)
+            voxels.append(vx)
 
-            # Convert the coordinate from a RGB image to a cropped RGB image.
-            xy = self.voxel_xy_res * (part - center) / image_xy_res + self.voxel_xy_res * 0.5
+        xy = self.voxel_xy_res * (part - center) / image_xy_res + self.voxel_xy_res * 0.5
 
-            if angle != 0.0:
-                xy = xy - self.voxel_xy_res / 2
-                cos = math.cos(angle * math.pi / 180)
-                sin = math.sin(angle * math.pi / 180)
-                x = sin * xy[:, 1] + cos * xy[:, 0]
-                y = cos * xy[:, 1] - sin * xy[:, 0]
-                xy[:, 0] = x
-                xy[:, 1] = y
-                xy = xy + self.voxel_xy_res / 2
+        if angle != 0.0:
+            xy = xy - self.voxel_xy_res / 2
+            cos = math.cos(angle * math.pi / 180)
+            sin = math.sin(angle * math.pi / 180)
+            x = sin * xy[:, 1] + cos * xy[:, 0]
+            y = cos * xy[:, 1] - sin * xy[:, 0]
+            xy[:, 0] = x
+            xy[:, 1] = y
+            xy = xy + self.voxel_xy_res / 2
 
-            voxel = voxels[:, z_res_cumsum[idx]:z_res_cumsum[idx + 1], :, :]
-            for part_idx in range(len(part)):
-                # zind range (1, 64)
-                # z range (0, 63)
-                z = math.ceil(zind[part_idx] * z_res / voxel_z_fine_res) - 1
-                if xy[part_idx, 0] < 0 or self.voxel_xy_res <= xy[part_idx, 0] or \
-                        xy[part_idx, 1] < 0 or self.voxel_xy_res <= xy[part_idx, 1]:
-                    continue
-                set_voxel(voxel[part_idx, :, :, :],
-                          self.voxel_xy_res,
-                          z_res,
-                          xy[part_idx],
-                          z,
-                          self.heatmap_xy_coeff,
-                          heatmap_z_coeff)
+        zidx = torch.ceil(zidx.unsqueeze(-1) * self.voxel_z_res_list / self.voxel_z_res_list[-1]) - 1
+        zidx = zidx.short().t()
+        zpad = torch.floor(self.heatmap_z_coeff / 2).short()
+
+        xy = xy.short()
+        pad = 3 * self.heatmap_xy_coeff
+
+        dst = [torch.clamp(xy - pad, min=0), torch.clamp(xy + pad + 1, max=self.voxel_xy_res, min=0)]
+        src = [torch.clamp(pad - xy, min=0), pad + 1 + torch.clamp(self.voxel_xy_res - xy - 1, max=pad)]
+
+        # z_res_cumsum = np.insert(np.cumsum(self.voxel_z_res_list), 0, 0)
+        # voxels = np.zeros((len(part), z_res_cumsum[-1], self.voxel_xy_res, self.voxel_xy_res), dtype=np.float32)  # JVHW
+
+        zdsts, zsrcs = list(), list()
+        for z, z_res, pad in zip(zidx, self.voxel_z_res_list.short(), zpad):
+            zdst = [torch.clamp(z - pad, min=0), torch.clamp(z + pad + 1, max=z_res, min=0)]  # BJ
+            zsrc = [torch.clamp(pad - z, min=0), pad + 1 + torch.clamp(z_res - z - 1, max=pad)]  # BJ
+            zdsts.append(zdst)
+            zsrcs.append(zsrc)
+
+        for (vx, zdst, zsrc, g), j in itertools.product(zip(voxels, zdsts, zsrcs, self.gaussians),
+                                                        range(self.joints)):
+            if xy[j, 0] < 0 or self.voxel_xy_res <= xy[j, 0] or \
+                    xy[j, 1] < 0 or self.voxel_xy_res <= xy[j, 1]:
+                continue
+            z_dst_slice = slice(zdst[0][j], zdst[1][j])
+            y_dst_slice = slice(dst[0][j, 1], dst[1][j, 1])
+            x_dst_slice = slice(dst[0][j, 0], dst[1][j, 0])
+
+            z_src_slice = slice(zsrc[0][j], zsrc[1][j])
+            y_src_slice = slice(src[0][j, 1], src[1][j, 1])
+            x_src_slice = slice(src[0][j, 0], src[1][j, 0])
+
+            vx[j, z_dst_slice, y_dst_slice, x_dst_slice] = g[z_src_slice, y_src_slice, x_src_slice]
 
         return voxels
+
+        # # Build voxel.
+        # voxel_z_fine_res = self.voxel_z_res_list[-1]
+        # for idx, (z_res, z_coeff, g) in enumerate(zip(self.voxel_z_res_list, self.heatmap_z_coeff, self.gaussians)):
+        #     # heatmap_z_coefficient is 1, 1, 1, 3, 5, 7, 13 for 1, 2, 4, 8, 16, 32, 64.
+        #     # heatmap_z_coeff = 2 * math.floor((6 * self.heatmap_xy_coeff * z_res / voxel_z_fine_res + 1) / 2) + 1
+        #
+        #     # Convert the coordinate from a RGB image to a cropped RGB image.
+        #     xy = self.voxel_xy_res * (part - center) / image_xy_res + self.voxel_xy_res * 0.5
+        #
+        #     if angle != 0.0:
+        #         xy = xy - self.voxel_xy_res / 2
+        #         cos = math.cos(angle * math.pi / 180)
+        #         sin = math.sin(angle * math.pi / 180)
+        #         x = sin * xy[:, 1] + cos * xy[:, 0]
+        #         y = cos * xy[:, 1] - sin * xy[:, 0]
+        #         xy[:, 0] = x
+        #         xy[:, 1] = y
+        #         xy = xy + self.voxel_xy_res / 2
+        #
+        #     voxel = self.voxels[idx]
+        #     # for part_idx in range(len(part)):
+        #     for xy_,
+        #         # zind range (1, 64)
+        #         # z range (0, 63)
+        #         z = math.ceil(zind[part_idx] * z_res / voxel_z_fine_res) - 1
+        #         if xy[part_idx, 0] < 0 or self.voxel_xy_res <= xy[part_idx, 0] or \
+        #                 xy[part_idx, 1] < 0 or self.voxel_xy_res <= xy[part_idx, 1]:
+        #             continue
+        #         set_voxel(voxel[part_idx, :, :, :],
+        #                   self.voxel_xy_res,
+        #                   z_res,
+        #                   xy[part_idx],
+        #                   z,
+        #                   self.heatmap_xy_coeff,
+        #                   z_coeff)
+
+        # return voxels
 
     def _get_voxels_coords(self, part, center, image_xy_res, angle, zind):
         xy = self.voxel_xy_res * (part - center) / image_xy_res + self.voxel_xy_res * 0.5
@@ -220,21 +291,20 @@ class Data(torch_data.Dataset):
             xy = xy + self.voxel_xy_res / 2
 
         coords = np.concatenate((xy, zind[:, np.newaxis]), axis=1)
+        coords = coords.astype(np.float32)
 
         return coords
         # for idx, z_res in enumerate(self.voxel_z_res_list):
-            # Convert the coordinate from a RGB image to a cropped RGB image.
+        # Convert the coordinate from a RGB image to a cropped RGB image.
 
-
-            # for part_idx in range(len(part)):
-                # if xy[part_idx, 0] < 0 or self.voxel_xy_res <= xy[part_idx, 0] or \
-                #         xy[part_idx, 1] < 0 or self.voxel_xy_res <= xy[part_idx, 1]:
-                #     continue
-                # set_voxel(voxel[part_idx, :, :, :],
-                #           self.voxel_xy_res,
-                #           z_res,
-                #           xy[part_idx],
-                #           z,
-                #           self.heatmap_xy_coeff,
-                #           heatmap_z_coeff)
-
+        # for part_idx in range(len(part)):
+        # if xy[part_idx, 0] < 0 or self.voxel_xy_res <= xy[part_idx, 0] or \
+        #         xy[part_idx, 1] < 0 or self.voxel_xy_res <= xy[part_idx, 1]:
+        #     continue
+        # set_voxel(voxel[part_idx, :, :, :],
+        #           self.voxel_xy_res,
+        #           z_res,
+        #           xy[part_idx],
+        #           z,
+        #           self.heatmap_xy_coeff,
+        #           heatmap_z_coeff)

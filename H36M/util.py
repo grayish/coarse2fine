@@ -6,11 +6,43 @@ import numpy as np
 import skimage
 import skimage.io
 import skimage.transform
+import torch
 from vectormath import Vector2
 
 
 @lru_cache(maxsize=32)
-def gaussian_3d(size, depth, sigma=0.25, mean=0.5, amplitude=1.0):
+def gaussian_3d(size, depth, sigma=0.25, mean=0.5, amplitude=1.0, device='cpu'):
+    width = size
+    height = size
+
+    sigma_u = sigma
+    sigma_v = sigma
+    sigma_r = sigma
+
+    mean_u = mean * width + 0.5
+    mean_v = mean * height + 0.5
+    mean_r = mean * depth + 0.5
+
+    over_sigma_u = 1.0 / (sigma_u * width)
+    over_sigma_v = 1.0 / (sigma_v * height)
+    over_sigma_r = 1.0 / (sigma_r * depth)
+
+    x = torch.arange(0, width, 1, dtype=torch.float32).to(device)
+    y = x.view(-1, 1)
+    z = torch.arange(0, depth, 1, dtype=torch.float32).to(device)
+    z = z.view(-1, 1, 1)
+
+    du = (x + 1 - mean_u) * over_sigma_u
+    dv = (y + 1 - mean_v) * over_sigma_v
+    dr = (z + 1 - mean_r) * over_sigma_r
+
+    gau = amplitude * torch.exp(-0.5 * (du * du + dv * dv + dr * dr))
+
+    return gau  # .transpose(1, 2, 0)
+
+
+@lru_cache(maxsize=32)
+def gaussian_3d_deprecated(size, depth, sigma=0.25, mean=0.5, amplitude=1.0):
     width = size
     height = size
 
