@@ -27,7 +27,7 @@ config = DotMap({
     "voxel_z_resolutions": [1, 2, 4, 64],
     "batch": 12,
     "workers": 8,
-    "epoch": 5
+    "epoch": 100
 })
 
 log.info('Reboot ')
@@ -74,8 +74,8 @@ if pretrained_epoch > 0:
              (pretrained_model['epoch'], pretrained_model['step']))
 
     model.load_state_dict(pretrained_model['state'])
+
     step[0] = pretrained_model['step']
-    optimizer.load_state_dict(pretrained_model['optimizer'])
     log.info('Done')
 else:
     pretrained_model = None
@@ -84,6 +84,8 @@ else:
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 log.info('set device: %s' % device)
 model = model.to(device)
+optimizer = torch.optim.RMSprop(model.parameters(), lr=2.5e-4)
+optimizer.load_state_dict(pretrained_model['optimizer'])
 
 # guassian_voxel = GaussianVoxel(config.voxel_z_resolutions,
 #                                config.heatmap_xy_coefficient,
@@ -104,8 +106,8 @@ for epoch in range(pretrained_epoch + 1, pretrained_epoch + 1 + config.epoch):
             voxel_cpu = voxels[-1]
             images = images.to(device)
             for idx, voxel in enumerate(voxels):
-                voxels[idx] = voxel.to(device).view(config.batch,
-                                                    -1,
+                voxels[idx] = voxel.to(device).view(-1,
+                                                    config.num_parts * config.voxel_z_resolutions[idx],
                                                     config.voxel_xy_resolution,
                                                     config.voxel_xy_resolution)
 
