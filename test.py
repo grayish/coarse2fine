@@ -1,6 +1,8 @@
+import h5py
 import os
 
 import numpy as np
+import scipy.io
 import torch
 import torch.nn as nn
 from dotmap import DotMap
@@ -9,6 +11,8 @@ from tqdm import tqdm
 from visdom import Visdom
 
 import H36M
+from H36M.task import Task
+from H36M.annotation import Annotation
 from demo import draw_merged_image
 from hourglass import StackedHourglass
 from log import log
@@ -16,11 +20,11 @@ from log import log
 viz = Visdom()
 
 config = DotMap({
-    "annotation_path": "/home/grayish/Downloads/Human3.6M/annot",
-    "image_path": "/home/grayish/Downloads/Human3.6M",
+    "annotation_path": "/media/nulledge/2nd/data/Human3.6M/converted/annot",
+    "image_path": "/media/nulledge/2nd/data/Human3.6M/converted/",
     "pretrained_path": "./pretrained/",
     "subjects": [1, 5, 6, 7, 8, 9, 11],
-    "task": "train",
+    "task": str(Task.Valid),
     "num_parts": 17,
     "heatmap_xy_coefficient": 2,
     "voxel_xy_resolution": 64,
@@ -38,16 +42,16 @@ log.info('Loading Human3.6M data...')
 
 loader = DataLoader(
     H36M.Data(
-        annotation_path=config.annotation_path,
         image_path=config.image_path,
         subjects=config.subjects,
-        task='train',
+        task=str(Task.Train),
         heatmap_xy_coefficient=config.heatmap_xy_coefficient,
         voxel_xy_resolution=config.voxel_xy_resolution,
         voxel_z_resolutions=config.voxel_z_resolutions,
-        joints=config.num_parts
+        joints=config.num_parts,
+        augment=False,
     ),
-    config.batch, shuffle=True, pin_memory=True,
+    config.batch, shuffle=(config.task == str(Task.Train)), pin_memory=True,
     num_workers=config.workers,
 )
 log.info('load complete.')
@@ -87,48 +91,138 @@ model = model.to(device)
 optimizer = torch.optim.RMSprop(model.parameters(), lr=2.5e-4)
 optimizer.load_state_dict(pretrained_model['optimizer'])
 
-# guassian_voxel = GaussianVoxel(config.voxel_z_resolutions,
-#                                config.heatmap_xy_coefficient,
-#                                config.batch,
-#                                config.num_parts,
-#                                config.voxel_xy_resolution)
-# guassian_voxel.to(device)
-
 criterion = nn.MSELoss()
+
+# Reconstructed voxel z-value.
+z_boundary = np.squeeze(
+    scipy.io.loadmat('/media/nulledge/2nd/data/Human3.6M/converted/annot/data/voxel_limits.mat')['limits'])
+z_reconstructed = (z_boundary[1:65] + z_boundary[0:64]) / 2
+z_delta = z_boundary[32]
+
+# Camera intrinsics.
+cam_intrinsics = {'f': {}, 'c': {}, 'k': {}, 'p': {}}
+for path, _, files in os.walk('calibration'):
+    for file in files:
+        name, _ = file.split('.')
+        serial, param = name.split('_')
+
+        cam_intrinsics[param][serial] = np.loadtxt(os.path.join(path, file))
+
+JPE = 0.0 # Joint Position Error.
+num = 1
 
 torch.set_num_threads(4)
 for epoch in range(pretrained_epoch + 1, pretrained_epoch + 1 + config.epoch):
     with tqdm(total=len(loader), unit=' iter', unit_scale=False) as progress:
         progress.set_description('Epoch %d' % epoch)
 
-        for images, voxels in loader:
-            images_cpu = images
-            voxel_cpu = voxels[-1]
-            images = images.to(device)
-            for idx, voxel in enumerate(voxels):
-                voxels[idx] = voxel.to(device).view(-1,
-                                                    config.num_parts * config.voxel_z_resolutions[idx],
-                                                    config.voxel_xy_resolution,
-                                                    config.voxel_xy_resolution)
+        with torch.set_grad_enabled(config.task == str(Task.Train)):
 
-            optimizer.zero_grad()
-            outputs = model(images)
+            for images, voxels, camera, raw_data in loader:
+                images_cpu = images
+                images = images.to(device)
 
-            loss = sum([criterion(out, voxel) for out, voxel in zip(outputs, voxels)])
-            loss.backward()
+                optimizer.zero_grad()
+                outputs = model(images)
 
-            optimizer.step()
-            progress.set_postfix(loss=float(loss.item()))
+                # Parameter optimization.
+                if config.task == str(Task.Train):
 
-            if step % 100 == 0:
-                output_cpu = outputs[-1].view(config.batch, config.num_parts, config.voxel_z_resolutions[-1],
-                                              config.voxel_xy_resolution,
-                                              config.voxel_xy_resolution).cpu().detach()
-                draw_merged_image(output_cpu, images_cpu.numpy(), 'train')
-                draw_merged_image(voxel_cpu, images_cpu.numpy(), 'gt')
+                    voxel_cpu = voxels[-1]
+                    for idx, voxel in enumerate(voxels):
+                        voxels[idx] = voxel.to(device).view(-1,
+                                                            config.num_parts * config.voxel_z_resolutions[idx],
+                                                            config.voxel_xy_resolution,
+                                                            config.voxel_xy_resolution)
 
-            step = step + 1
-            progress.update(1)
+                    loss = sum([criterion(out, voxel) for out, voxel in zip(outputs, voxels)])
+                    loss.backward()
+
+                    optimizer.step()
+                    progress.set_postfix(loss=float(loss.item()))
+
+                    if step % 100 == 0:
+                        output_cpu = outputs[-1].view(config.batch, config.num_parts, config.voxel_z_resolutions[-1],
+                                                      config.voxel_xy_resolution,
+                                                      config.voxel_xy_resolution).cpu().detach()
+                        draw_merged_image(output_cpu, images_cpu.numpy(), 'train')
+                        draw_merged_image(voxel_cpu, images_cpu.numpy(), 'gt')
+
+                    step = step + 1
+                    progress.update(1)
+
+                # 3D pose reconstruction.
+                elif config.task == str(Task.Valid):
+
+                    fine_results = outputs[-1]
+                    z_res = config.voxel_z_resolutions[-1]
+                    x_res = y_res = config.voxel_xy_resolution
+                    n_batch, channel, height, width = fine_results.shape
+
+                    for batch, fine_result in enumerate(fine_results):
+
+                        f, c, k, p = [cam_intrinsics[param][camera[batch]] for param in ['f', 'c', 'k', 'p']]
+
+                        with h5py.File('/media/nulledge/2nd/data/Human3.6M/pred/valid_%d.h5' % num, 'w') as file:
+                            coords = {'x': 0, 'y': 1, 'z': 2}
+                            num = num + 1
+                            pred = np.zeros(shape=(len(coords), config.num_parts, ), dtype=np.int)
+
+                            for joint in range(config.num_parts):
+                                joint_prediction = fine_result[joint * z_res:(joint + 1) * z_res, :, :]
+                                joint_prediction = joint_prediction.view(-1)  # flatten
+
+                                _, part = joint_prediction.max(0)
+                                z = part / (x_res * y_res)
+                                y = part % (x_res * y_res) / y_res
+                                x = part % (x_res * y_res) % y_res
+
+                                in_volume_space = [x, y, z]
+                                x, y, z = [int(x), int(y), int(z), ]
+
+                                pred[coords['x']][joint] = x
+                                pred[coords['y']][joint] = y
+                                pred[coords['z']][joint] = z
+
+                                if str(Annotation.S) not in raw_data.keys():
+                                    continue
+
+                                x, y, _ = [float(x), float(y), float(z), ]
+
+                                center = raw_data[str(Annotation.Center)][batch]
+                                scale = raw_data[str(Annotation.Scale)][batch]
+                                x_coord, y_coord = [0, 1, ]
+                                x = center[x_coord] + (x - x_res / 2) * scale * 200 / x_res
+                                y = center[y_coord] + (y - y_res / 2) * scale * 200 / y_res
+
+                                in_image_space = [x, y, 1]
+
+                                S, root, z_coord = [raw_data[str(Annotation.S)][batch], 0, 2, ]
+                                z_root = S[root, z_coord] + z_delta
+                                z_relative = z_reconstructed[z]
+                                z = z_root + z_relative
+
+                                x = (x - c[0]) * z / f[0]
+                                y = (y - c[1]) * z / f[1]
+
+                                in_camera_space = [x, y, z]
+
+                                reconstructed = np.asarray(in_camera_space)
+                                S_joint = S[joint]
+                                error = np.linalg.norm(reconstructed - S_joint)
+                                JPE = JPE + error
+
+                            sub = file.create_dataset('preds3D', (len(coords), config.num_parts, ), data=pred)
+
+                    progress.update(1)
+                    progress.set_postfix(MPJPE='%fmm' % (JPE / ((num-1) * config.num_parts)))
+
+                else:
+                    log.error('Wrong task: %s' % str(config.task))
+                    raise Exception('Wrong task!')
+
+    if config.task == str(Task.Valid):
+        break
 
     log.info('Saving the trained model... (%d epoch, %d step)' % (epoch, step))
     pretrained_model = os.path.join(config.pretrained_path, '%d.save' % epoch)

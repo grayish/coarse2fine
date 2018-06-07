@@ -13,7 +13,7 @@ from vectormath import Vector2
 
 from H36M.util import decode_image_name, rand, gaussian_3d
 from .annotation import annotations, Annotation
-from .task import tasks
+from .task import tasks, Task
 
 T = transforms.Compose([
     transforms.ToTensor()
@@ -21,8 +21,9 @@ T = transforms.Compose([
 
 
 class Data(torch_data.Dataset):
-    def __init__(self, annotation_path, image_path, subjects, task, joints,
-                 heatmap_xy_coefficient, voxel_xy_resolution, voxel_z_resolutions):
+    def __init__(self, image_path, subjects, task, joints,
+                 heatmap_xy_coefficient, voxel_xy_resolution, voxel_z_resolutions, augment):
+        self.augment = augment
         self.voxel_z_res_list = torch.FloatTensor(voxel_z_resolutions)
         self.voxel_xy_res = voxel_xy_resolution
         self.heatmap_xy_coeff = heatmap_xy_coefficient
@@ -54,38 +55,45 @@ class Data(torch_data.Dataset):
         return len(self.data[str(self.task)][str(Annotation.Image)])
 
     def __getitem__(self, index):
-        raw_data = (self.data[str(self.task)][str(Annotation.Image)][index],)
-        for annotation in annotations[str(self.task)]:
-            raw_data = raw_data + (self.data[str(self.task)][str(annotation)][index],)
+        raw_data = dict()
+        for annotation in [Annotation.Image] + annotations[str(self.task)]:
+            raw_data[str(annotation)] = self.data[str(self.task)][str(annotation)][index]
 
-        image, voxels = self.preprocess(raw_data)
+        image, voxels, camera = self.preprocess(raw_data)
 
-        return image, voxels
+        return image, voxels, camera, raw_data
 
     def __add__(self, item):
         pass
 
     def preprocess(self, raw_data):
-        image_name, S, center, part, scale, zind = raw_data
+        # Common annotations for training and validation.
+        image_name = raw_data[str(Annotation.Image)]
+        center = raw_data[str(Annotation.Center)]
+        scale = raw_data[str(Annotation.Scale)]
+        image_xy_res = 200 * scale
+        angle = 0
 
         # Extract subject and camera name from an image name.
         subject, _, camera, _ = decode_image_name(image_name)
 
-        # Pre-calculate constants.
-        scale = scale * 2 ** rand(0.25) * 1.25
-        angle = rand(30) if random.random() <= 0.4 else 0
-        image_xy_res = 200 * scale
+        # Data augmentation.
+        if self.task == str(Task.Train) and self.augment:
+            scale = scale * 2 ** rand(0.25) * 1.25
+            angle = rand(30) if random.random() <= 0.4 else 0
 
         # Crop RGB image.
-
         image_path = os.path.join(self.image_path, subject, image_name)
-
         image = self._get_crop_image(image_path, center, scale, angle)
 
-        # coords = self._get_voxels_coords(part, center, image_xy_res, angle, zind)
-        voxels = self._get_voxels(part, center, image_xy_res, angle, zind)
+        if self.task == str(Task.Train):
+            zind = raw_data[str(Annotation.Z)]
+            part = raw_data[str(Annotation.Part)]
+            voxels = self._get_voxels(part, center, image_xy_res, angle, zind)
+        else:
+            voxels = -1
 
-        return T(image), voxels
+        return T(image), voxels, camera
 
     def _get_crop_image(self, image_path, center, scale, angle, resolution=256):
         image = Image.open(image_path)
