@@ -1,4 +1,3 @@
-import h5py
 import os
 
 import numpy as np
@@ -8,16 +7,12 @@ import torch.nn as nn
 from dotmap import DotMap
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-from visdom import Visdom
 
 import H36M
 from H36M.task import Task
-from H36M.annotation import Annotation
 from demo import draw_merged_image
 from hourglass import StackedHourglass
 from log import log
-
-viz = Visdom()
 
 config = DotMap({
     "annotation_path": "/media/nulledge/2nd/data/Human3.6M/converted/annot",
@@ -41,7 +36,7 @@ log.debug(config)
 log.info('Loading Human3.6M data...')
 
 loader = DataLoader(
-    H36M.Data(
+    H36M.Human36m(
         image_path=config.image_path,
         subjects=config.subjects,
         task=str(Task.Train),
@@ -58,7 +53,7 @@ log.info('load complete.')
 
 log.info('Creating model...')
 model = StackedHourglass(config.voxel_z_resolutions, 256, config.num_parts)
-optimizer = torch.optim.RMSprop(model.parameters(), lr=2.5e-4)
+# optimizer = torch.optim.RMSprop(model.parameters(), lr=2.5e-4)
 step = np.zeros([1], dtype=np.uint32)
 log.info('Done')
 
@@ -89,7 +84,8 @@ device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 log.info('set device: %s' % device)
 model = model.to(device)
 optimizer = torch.optim.RMSprop(model.parameters(), lr=2.5e-4)
-optimizer.load_state_dict(pretrained_model['optimizer'])
+if pretrained_model is not None:
+    optimizer.load_state_dict(pretrained_model['optimizer'])
 
 criterion = nn.MSELoss()
 
@@ -108,7 +104,7 @@ for path, _, files in os.walk('calibration'):
 
         cam_intrinsics[param][serial] = np.loadtxt(os.path.join(path, file))
 
-JPE = 0.0 # Joint Position Error.
+JPE = 0.0  # Joint Position Error.
 num = 1
 
 torch.set_num_threads(4)
@@ -160,62 +156,10 @@ for epoch in range(pretrained_epoch + 1, pretrained_epoch + 1 + config.epoch):
                     n_batch, channel, height, width = fine_results.shape
 
                     for batch, fine_result in enumerate(fine_results):
-
                         f, c, k, p = [cam_intrinsics[param][camera[batch]] for param in ['f', 'c', 'k', 'p']]
 
-                        with h5py.File('/media/nulledge/2nd/data/Human3.6M/pred/valid_%d.h5' % num, 'w') as file:
-                            coords = {'x': 0, 'y': 1, 'z': 2}
-                            num = num + 1
-                            pred = np.zeros(shape=(len(coords), config.num_parts, ), dtype=np.int)
-
-                            for joint in range(config.num_parts):
-                                joint_prediction = fine_result[joint * z_res:(joint + 1) * z_res, :, :]
-                                joint_prediction = joint_prediction.view(-1)  # flatten
-
-                                _, part = joint_prediction.max(0)
-                                z = part / (x_res * y_res)
-                                y = part % (x_res * y_res) / y_res
-                                x = part % (x_res * y_res) % y_res
-
-                                in_volume_space = [x, y, z]
-                                x, y, z = [int(x), int(y), int(z), ]
-
-                                pred[coords['x']][joint] = x
-                                pred[coords['y']][joint] = y
-                                pred[coords['z']][joint] = z
-
-                                if str(Annotation.S) not in raw_data.keys():
-                                    continue
-
-                                x, y, _ = [float(x), float(y), float(z), ]
-
-                                center = raw_data[str(Annotation.Center)][batch]
-                                scale = raw_data[str(Annotation.Scale)][batch]
-                                x_coord, y_coord = [0, 1, ]
-                                x = center[x_coord] + (x - x_res / 2) * scale * 200 / x_res
-                                y = center[y_coord] + (y - y_res / 2) * scale * 200 / y_res
-
-                                in_image_space = [x, y, 1]
-
-                                S, root, z_coord = [raw_data[str(Annotation.S)][batch], 0, 2, ]
-                                z_root = S[root, z_coord] + z_delta
-                                z_relative = z_reconstructed[z]
-                                z = z_root + z_relative
-
-                                x = (x - c[0]) * z / f[0]
-                                y = (y - c[1]) * z / f[1]
-
-                                in_camera_space = [x, y, z]
-
-                                reconstructed = np.asarray(in_camera_space)
-                                S_joint = S[joint]
-                                error = np.linalg.norm(reconstructed - S_joint)
-                                JPE = JPE + error
-
-                            sub = file.create_dataset('preds3D', (len(coords), config.num_parts, ), data=pred)
-
                     progress.update(1)
-                    progress.set_postfix(MPJPE='%fmm' % (JPE / ((num-1) * config.num_parts)))
+                    progress.set_postfix(MPJPE='%fmm' % (JPE / ((num - 1) * config.num_parts)))
 
                 else:
                     log.error('Wrong task: %s' % str(config.task))

@@ -4,7 +4,6 @@ import os
 import pickle
 import random
 
-import cv2
 import torch
 import torch.utils.data as torch_data
 from PIL import Image
@@ -16,14 +15,14 @@ from .annotation import annotations, Annotation
 from .task import tasks, Task
 
 T = transforms.Compose([
+    transforms.ColorJitter(0.3, 0.3, 0.3, 0.3),
     transforms.ToTensor()
 ])
 
 
-class Data(torch_data.Dataset):
+class Human36m(torch_data.Dataset):
     def __init__(self, image_path, subjects, task, joints,
                  heatmap_xy_coefficient, voxel_xy_resolution, voxel_z_resolutions, augment):
-        self.augment = augment
         self.voxel_z_res_list = torch.FloatTensor(voxel_z_resolutions)
         self.voxel_xy_res = voxel_xy_resolution
         self.heatmap_xy_coeff = heatmap_xy_coefficient
@@ -31,6 +30,7 @@ class Data(torch_data.Dataset):
         self.subjects = subjects
         self.joints = joints
         self.image_path = image_path
+        self.augment = augment
 
         # initialize
         self.heatmap_z_coeff = 2 * torch.floor(
@@ -147,45 +147,6 @@ class Data(torch_data.Dataset):
 
         return new_image
 
-    def _get_crop_image_cv(self, image_path, center, scale, resolution=256):
-        image = cv2.imread(image_path)
-
-        height, width, channel = image.shape
-        center = Vector2(center)  # assign new array
-
-        scale = scale * 1.25
-        crop_ratio = 200 * scale / resolution
-
-        if crop_ratio >= 2:  # if box size is greater than two time of resolution px
-            # scale down image
-            height = math.floor(height / crop_ratio)
-            width = math.floor(width / crop_ratio)
-
-            if max([height, width]) < 2:
-                # Zoomed out so much that the image is now a single pixel or less
-                raise ValueError("Width or height is invalid!")
-
-            image = cv2.resize(image, (width, height), interpolation=cv2.INTER_AREA)
-
-            center /= crop_ratio
-            scale /= crop_ratio
-
-        ul = (center - 200 * scale / 2).astype(int)
-        br = (center + 200 * scale / 2).astype(int)  # Vector2
-
-        if crop_ratio >= 2:  # force image size 256 x 256
-            br -= (br - ul - resolution)
-
-        src = [max(0, ul.y), min(height, br.y), max(0, ul.x), min(width, br.x)]
-        dst = [max(0, -ul.y), min(height, br.y) - ul.y, max(0, -ul.x), min(width, br.x) - ul.x]
-        new_image = np.zeros([br.y - ul.y, br.x - ul.x, channel], dtype=np.uint8)
-        new_image[dst[0]:dst[1], dst[2]:dst[3], :] = image[src[0]:src[1], src[2]:src[3], :]
-
-        if crop_ratio < 2:
-            new_image = cv2.resize(new_image, (resolution, resolution), interpolation=cv2.INTER_AREA)
-
-        return new_image
-
     def _get_voxels(self, part, center, image_xy_res, angle, zidx):
         part = torch.from_numpy(part).float()
         center = torch.from_numpy(center).float()
@@ -247,72 +208,3 @@ class Data(torch_data.Dataset):
 
         return voxels
 
-        # # Build voxel.
-        # voxel_z_fine_res = self.voxel_z_res_list[-1]
-        # for idx, (z_res, z_coeff, g) in enumerate(zip(self.voxel_z_res_list, self.heatmap_z_coeff, self.gaussians)):
-        #     # heatmap_z_coefficient is 1, 1, 1, 3, 5, 7, 13 for 1, 2, 4, 8, 16, 32, 64.
-        #     # heatmap_z_coeff = 2 * math.floor((6 * self.heatmap_xy_coeff * z_res / voxel_z_fine_res + 1) / 2) + 1
-        #
-        #     # Convert the coordinate from a RGB image to a cropped RGB image.
-        #     xy = self.voxel_xy_res * (part - center) / image_xy_res + self.voxel_xy_res * 0.5
-        #
-        #     if angle != 0.0:
-        #         xy = xy - self.voxel_xy_res / 2
-        #         cos = math.cos(angle * math.pi / 180)
-        #         sin = math.sin(angle * math.pi / 180)
-        #         x = sin * xy[:, 1] + cos * xy[:, 0]
-        #         y = cos * xy[:, 1] - sin * xy[:, 0]
-        #         xy[:, 0] = x
-        #         xy[:, 1] = y
-        #         xy = xy + self.voxel_xy_res / 2
-        #
-        #     voxel = self.voxels[idx]
-        #     # for part_idx in range(len(part)):
-        #     for xy_,
-        #         # zind range (1, 64)
-        #         # z range (0, 63)
-        #         z = math.ceil(zind[part_idx] * z_res / voxel_z_fine_res) - 1
-        #         if xy[part_idx, 0] < 0 or self.voxel_xy_res <= xy[part_idx, 0] or \
-        #                 xy[part_idx, 1] < 0 or self.voxel_xy_res <= xy[part_idx, 1]:
-        #             continue
-        #         set_voxel(voxel[part_idx, :, :, :],
-        #                   self.voxel_xy_res,
-        #                   z_res,
-        #                   xy[part_idx],
-        #                   z,
-        #                   self.heatmap_xy_coeff,
-        #                   z_coeff)
-
-        # return voxels
-
-    def _get_voxels_coords(self, part, center, image_xy_res, angle, zind):
-        xy = self.voxel_xy_res * (part - center) / image_xy_res + self.voxel_xy_res * 0.5
-
-        if angle != 0.0:
-            xy = xy - self.voxel_xy_res / 2
-            cos = math.cos(angle * math.pi / 180)
-            sin = math.sin(angle * math.pi / 180)
-            x = sin * xy[:, 1] + cos * xy[:, 0]
-            y = cos * xy[:, 1] - sin * xy[:, 0]
-            xy[:, 0] = x
-            xy[:, 1] = y
-            xy = xy + self.voxel_xy_res / 2
-
-        coords = np.concatenate((xy, zind[:, np.newaxis]), axis=1)
-        coords = coords.astype(np.float32)
-
-        return coords
-        # for idx, z_res in enumerate(self.voxel_z_res_list):
-        # Convert the coordinate from a RGB image to a cropped RGB image.
-
-        # for part_idx in range(len(part)):
-        # if xy[part_idx, 0] < 0 or self.voxel_xy_res <= xy[part_idx, 0] or \
-        #         xy[part_idx, 1] < 0 or self.voxel_xy_res <= xy[part_idx, 1]:
-        #     continue
-        # set_voxel(voxel[part_idx, :, :, :],
-        #           self.voxel_xy_res,
-        #           z_res,
-        #           xy[part_idx],
-        #           z,
-        #           self.heatmap_xy_coeff,
-        #           heatmap_z_coeff)

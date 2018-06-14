@@ -3,9 +3,6 @@ import random
 from functools import lru_cache
 
 import numpy as np
-import skimage
-import skimage.io
-import skimage.transform
 import torch
 from vectormath import Vector2
 
