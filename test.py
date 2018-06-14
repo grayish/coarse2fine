@@ -1,7 +1,6 @@
 import os
 
 import numpy as np
-import scipy.io
 import torch
 import torch.nn as nn
 from dotmap import DotMap
@@ -15,11 +14,11 @@ from hourglass import StackedHourglass
 from log import log
 
 config = DotMap({
-    "annotation_path": "/media/nulledge/2nd/data/Human3.6M/converted/annot",
-    "image_path": "/media/nulledge/2nd/data/Human3.6M/converted/",
+    "annotation_path": "./Human3.6M/annot",
+    "image_path": "./Human3.6M",
     "pretrained_path": "./pretrained/",
     "subjects": [1, 5, 6, 7, 8, 9, 11],
-    "task": str(Task.Valid),
+    "task": str(Task.Train),
     "num_parts": 17,
     "heatmap_xy_coefficient": 2,
     "voxel_xy_resolution": 64,
@@ -89,24 +88,6 @@ if pretrained_model is not None:
 
 criterion = nn.MSELoss()
 
-# Reconstructed voxel z-value.
-z_boundary = np.squeeze(
-    scipy.io.loadmat('/media/nulledge/2nd/data/Human3.6M/converted/annot/data/voxel_limits.mat')['limits'])
-z_reconstructed = (z_boundary[1:65] + z_boundary[0:64]) / 2
-z_delta = z_boundary[32]
-
-# Camera intrinsics.
-cam_intrinsics = {'f': {}, 'c': {}, 'k': {}, 'p': {}}
-for path, _, files in os.walk('calibration'):
-    for file in files:
-        name, _ = file.split('.')
-        serial, param = name.split('_')
-
-        cam_intrinsics[param][serial] = np.loadtxt(os.path.join(path, file))
-
-JPE = 0.0  # Joint Position Error.
-num = 1
-
 torch.set_num_threads(4)
 for epoch in range(pretrained_epoch + 1, pretrained_epoch + 1 + config.epoch):
     with tqdm(total=len(loader), unit=' iter', unit_scale=False) as progress:
@@ -149,17 +130,7 @@ for epoch in range(pretrained_epoch + 1, pretrained_epoch + 1 + config.epoch):
 
                 # 3D pose reconstruction.
                 elif config.task == str(Task.Valid):
-
-                    fine_results = outputs[-1]
-                    z_res = config.voxel_z_resolutions[-1]
-                    x_res = y_res = config.voxel_xy_resolution
-                    n_batch, channel, height, width = fine_results.shape
-
-                    for batch, fine_result in enumerate(fine_results):
-                        f, c, k, p = [cam_intrinsics[param][camera[batch]] for param in ['f', 'c', 'k', 'p']]
-
-                    progress.update(1)
-                    progress.set_postfix(MPJPE='%fmm' % (JPE / ((num - 1) * config.num_parts)))
+                    pass
 
                 else:
                     log.error('Wrong task: %s' % str(config.task))
