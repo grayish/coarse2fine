@@ -26,6 +26,9 @@ annotations[str(Task.Train)] = [
     Annotation.Z,
 ]
 annotations[str(Task.Valid)] = [
+    Annotation.S,
     Annotation.Center,
+    Annotation.Part,
     Annotation.Scale,
+    Annotation.Z,
 ]

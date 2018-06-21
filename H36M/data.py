@@ -5,6 +5,7 @@ import pickle
 import random
 
 import cv2
+import numpy as np
 import torch
 import torch.utils.data as torch_data
 from PIL import Image
@@ -58,8 +59,15 @@ class Data(torch_data.Dataset):
         raw_data = dict()
         for annotation in [Annotation.Image] + annotations[str(self.task)]:
             raw_data[str(annotation)] = self.data[str(self.task)][str(annotation)][index]
+            if annotation is Annotation.Center: # and self.task is str(Task.Valid)
+                raw_data[str(annotation)] = np.asarray([raw_data[str(annotation)].x, raw_data[str(annotation)].y])
 
         image, voxels, camera = self.preprocess(raw_data)
+
+        if self.augment:
+            for channel in range(3):
+                image[channel, :, :] *= random.uniform(0.6, 1.4)
+            image = np.clip(image, 0.0, 1.0)
 
         return image, voxels, camera, raw_data
 
@@ -71,23 +79,24 @@ class Data(torch_data.Dataset):
         image_name = raw_data[str(Annotation.Image)]
         center = raw_data[str(Annotation.Center)]
         scale = raw_data[str(Annotation.Scale)]
-        image_xy_res = 200 * scale
         angle = 0
-
-        # Extract subject and camera name from an image name.
-        subject, _, camera, _ = decode_image_name(image_name)
 
         # Data augmentation.
         if self.task == str(Task.Train) and self.augment:
             scale = scale * 2 ** rand(0.25) * 1.25
             angle = rand(30) if random.random() <= 0.4 else 0
 
+        image_xy_res = 200 * scale
+
+        # Extract subject and camera name from an image name.
+        subject, _, camera, _ = decode_image_name(image_name)
+
         # Crop RGB image.
         image_path = os.path.join(self.image_path, subject, image_name)
         image = self._get_crop_image(image_path, center, scale, angle)
 
         if self.task == str(Task.Train):
-            zind = raw_data[str(Annotation.Z)]
+            zind = np.clip(raw_data[str(Annotation.Z)], 1, 64)
             part = raw_data[str(Annotation.Part)]
             voxels = self._get_voxels(part, center, image_xy_res, angle, zind)
         else:
