@@ -44,7 +44,7 @@ loader = DataLoader(
     H36M.Data(
         image_path=config.image_path,
         subjects=config.subjects,
-        task=str(Task.Train),
+        task=str(Task.Valid),
         heatmap_xy_coefficient=config.heatmap_xy_coefficient,
         voxel_xy_resolution=config.voxel_xy_resolution,
         voxel_z_resolutions=config.voxel_z_resolutions,
@@ -89,7 +89,7 @@ device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 log.info('set device: %s' % device)
 model = model.to(device)
 optimizer = torch.optim.RMSprop(model.parameters(), lr=2.5e-4)
-optimizer.load_state_dict(pretrained_model['optimizer'])
+# optimizer.load_state_dict(pretrained_model['optimizer'])
 
 criterion = nn.MSELoss()
 
@@ -118,7 +118,7 @@ for epoch in range(pretrained_epoch + 1, pretrained_epoch + 1 + config.epoch):
 
         with torch.set_grad_enabled(config.task == str(Task.Train)):
 
-            for images, voxels, camera, raw_data in loader:
+            for images, voxels, cameras, raw_data in loader:
                 images_cpu = images
                 images = images.to(device)
 
@@ -161,58 +161,44 @@ for epoch in range(pretrained_epoch + 1, pretrained_epoch + 1 + config.epoch):
 
                     for batch, fine_result in enumerate(fine_results):
 
-                        f, c, k, p = [cam_intrinsics[param][camera[batch]] for param in ['f', 'c', 'k', 'p']]
+                        f, c, k, p = [cam_intrinsics[param][cameras[batch]] for param in ['f', 'c', 'k', 'p']]
 
-                        with h5py.File('/media/nulledge/2nd/data/Human3.6M/pred/valid_%d.h5' % num, 'w') as file:
-                            coords = {'x': 0, 'y': 1, 'z': 2}
-                            num = num + 1
-                            pred = np.zeros(shape=(len(coords), config.num_parts, ), dtype=np.int)
+                        num = num + 1
 
-                            for joint in range(config.num_parts):
-                                joint_prediction = fine_result[joint * z_res:(joint + 1) * z_res, :, :]
-                                joint_prediction = joint_prediction.view(-1)  # flatten
+                        for joint in range(config.num_parts):
+                            joint_prediction = fine_result[joint * z_res:(joint + 1) * z_res, :, :]
+                            joint_prediction = joint_prediction.view(-1)  # flatten
 
-                                _, part = joint_prediction.max(0)
-                                z = part / (x_res * y_res)
-                                y = part % (x_res * y_res) / y_res
-                                x = part % (x_res * y_res) % y_res
+                            _, part = joint_prediction.max(0)
+                            z = part / (x_res * y_res)
+                            y = (part % (x_res * y_res)) / y_res
+                            x = (part % (x_res * y_res)) % y_res
 
-                                in_volume_space = [x, y, z]
-                                x, y, z = [int(x), int(y), int(z), ]
+                            x, y, z = [int(x), int(y), int(z)]
+                            in_volume_space = [x, y, z]
 
-                                pred[coords['x']][joint] = x
-                                pred[coords['y']][joint] = y
-                                pred[coords['z']][joint] = z
+                            center = raw_data[str(Annotation.Center)][batch]
+                            scale = raw_data[str(Annotation.Scale)][batch]
+                            x_coord, y_coord = [0, 1, ]
+                            x = (x - x_res/2) * (scale*200/x_res) + center[x_coord]
+                            y = (y - y_res/2) * (scale*200/y_res) + center[y_coord]
 
-                                if str(Annotation.S) not in raw_data.keys():
-                                    continue
+                            in_image_space = [x, y, 1]
 
-                                x, y, _ = [float(x), float(y), float(z), ]
+                            S, root, z_coord = [raw_data[str(Annotation.S)][batch], 0, 2, ]
+                            z_root = S[root, z_coord] + z_delta
+                            z_relative = z_reconstructed[z]
+                            z = z_root + z_relative
 
-                                center = raw_data[str(Annotation.Center)][batch]
-                                scale = raw_data[str(Annotation.Scale)][batch]
-                                x_coord, y_coord = [0, 1, ]
-                                x = center[x_coord] + (x - x_res / 2) * scale * 200 / x_res
-                                y = center[y_coord] + (y - y_res / 2) * scale * 200 / y_res
+                            x = (x - c[0]) * z / f[0]
+                            y = (y - c[1]) * z / f[1]
 
-                                in_image_space = [x, y, 1]
+                            in_camera_space = [x, y, z]
 
-                                S, root, z_coord = [raw_data[str(Annotation.S)][batch], 0, 2, ]
-                                z_root = S[root, z_coord] + z_delta
-                                z_relative = z_reconstructed[z]
-                                z = z_root + z_relative
-
-                                x = (x - c[0]) * z / f[0]
-                                y = (y - c[1]) * z / f[1]
-
-                                in_camera_space = [x, y, z]
-
-                                reconstructed = np.asarray(in_camera_space)
-                                S_joint = S[joint]
-                                error = np.linalg.norm(reconstructed - S_joint)
-                                JPE = JPE + error
-
-                            sub = file.create_dataset('preds3D', (len(coords), config.num_parts, ), data=pred)
+                            reconstructed = np.asarray(in_camera_space)
+                            S_joint = S[joint]
+                            error = np.linalg.norm(reconstructed - S_joint)
+                            JPE = JPE + error
 
                     progress.update(1)
                     progress.set_postfix(MPJPE='%fmm' % (JPE / ((num-1) * config.num_parts)))
