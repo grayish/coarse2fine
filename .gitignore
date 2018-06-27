@@ -11,6 +11,9 @@ __pycache__/
 
 # Binary
 *.png
+*.jpg
+*.bin
+*.dat
 
 # Human3.6M
 H36M.conf
