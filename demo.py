@@ -1,9 +1,6 @@
 import numpy as np
 import torch
 from torchvision import transforms
-from visdom import Visdom
-
-viz = Visdom(server='http://163.152.161.87', env='sangbin')
 
 Color = torch.FloatTensor(
     [[0, 0, 0.5],
@@ -60,7 +57,7 @@ T = transforms.Compose([
 ])
 
 
-def draw_merged_image(heatmaps, images, window):
+def get_merged_image(heatmaps, images):
     heatmaps = merge_to_color_heatmap(heatmaps)
     # heatmaps = heatmaps.permute(0, 2, 3, 1)  # NHWC
 
@@ -78,4 +75,5 @@ def draw_merged_image(heatmaps, images, window):
 
     # overlayed_image = overlayed_image.transpose(0, 3, 1, 2)
 
-    return viz.images(tensor=overlayed_image, nrow=3, win=window)
+    return overlayed_image
+    # return viz.images(tensor=overlayed_image, nrow=3, win=window)

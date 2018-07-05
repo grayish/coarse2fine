@@ -6,16 +6,17 @@ import torch.nn as nn
 from dotmap import DotMap
 from torch.utils.data import DataLoader
 from tqdm import tqdm
+from visdom import Visdom
 
 import H36M
 from H36M.task import Task
-from demo import draw_merged_image
+from demo import get_merged_image
 from hourglass import StackedHourglass
 from log import log
 
 config = DotMap({
     "annotation_path": "./Human3.6M/annot",
-    "image_path": "./Human3.6M",
+    "image_path": "./Human3.6M/images",
     "pretrained_path": "./pretrained/",
     "subjects": [1, 5, 6, 7, 8, 9, 11],
     "task": str(Task.Train),
@@ -23,10 +24,12 @@ config = DotMap({
     "heatmap_xy_coefficient": 2,
     "voxel_xy_resolution": 64,
     "voxel_z_resolutions": [1, 2, 4, 64],
-    "batch": 12,
+    "batch": 6,
     "workers": 8,
     "epoch": 100
 })
+
+viz = Visdom(env='sangbin')
 
 log.info('Reboot ')
 
@@ -43,7 +46,7 @@ loader = DataLoader(
         voxel_xy_resolution=config.voxel_xy_resolution,
         voxel_z_resolutions=config.voxel_z_resolutions,
         joints=config.num_parts,
-        augment=False,
+        augment=True,
     ),
     config.batch, shuffle=(config.task == str(Task.Train)), pin_memory=True,
     num_workers=config.workers,
@@ -122,8 +125,9 @@ for epoch in range(pretrained_epoch + 1, pretrained_epoch + 1 + config.epoch):
                         output_cpu = outputs[-1].view(config.batch, config.num_parts, config.voxel_z_resolutions[-1],
                                                       config.voxel_xy_resolution,
                                                       config.voxel_xy_resolution).cpu().detach()
-                        draw_merged_image(output_cpu, images_cpu.numpy(), 'train')
-                        draw_merged_image(voxel_cpu, images_cpu.numpy(), 'gt')
+
+                        viz.images(tensor=get_merged_image(output_cpu, images_cpu.numpy()), nrow=3, win='train')
+                        viz.images(tensor=get_merged_image(voxel_cpu, images_cpu.numpy()), nrow=3, win='gt')
 
                     step = step + 1
                     progress.update(1)
