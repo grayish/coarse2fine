@@ -110,6 +110,8 @@ for path, _, files in os.walk('calibration'):
 
 JPE = 0.0 # Joint Position Error.
 num = 1
+num_sequence = dict()
+error_sequence = dict()
 
 torch.set_num_threads(4)
 for epoch in range(pretrained_epoch + 1, pretrained_epoch + 1 + config.epoch):
@@ -118,7 +120,7 @@ for epoch in range(pretrained_epoch + 1, pretrained_epoch + 1 + config.epoch):
 
         with torch.set_grad_enabled(config.task == str(Task.Train)):
 
-            for images, voxels, cameras, raw_data in loader:
+            for images, voxels, cameras, raw_data, sequence in loader:
                 images_cpu = images
                 images = images.to(device)
 
@@ -200,12 +202,24 @@ for epoch in range(pretrained_epoch + 1, pretrained_epoch + 1 + config.epoch):
                             error = np.linalg.norm(reconstructed - S_joint)
                             JPE = JPE + error
 
+                            if sequence[batch] not in num_sequence.keys():
+                                num_sequence[sequence[batch]] = 0
+                                error_sequence[sequence[batch]] = 0
+
+                            error_sequence[sequence[batch]] += error
+                            num_sequence[sequence[batch]] += 1
+
                     progress.update(1)
                     progress.set_postfix(MPJPE='%fmm' % (JPE / ((num-1) * config.num_parts)))
 
                 else:
                     log.error('Wrong task: %s' % str(config.task))
                     raise Exception('Wrong task!')
+
+    log.info(error_sequence)
+    log.info(num_sequence)
+    for key in error_sequence.keys():
+        log.info('%s: %f' % (key, error_sequence[key] / num_sequence[key]))
 
     if config.task == str(Task.Valid):
         break

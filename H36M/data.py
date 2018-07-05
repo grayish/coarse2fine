@@ -62,14 +62,14 @@ class Data(torch_data.Dataset):
             if annotation is Annotation.Center: # and self.task is str(Task.Valid)
                 raw_data[str(annotation)] = np.asarray([raw_data[str(annotation)].x, raw_data[str(annotation)].y])
 
-        image, voxels, camera = self.preprocess(raw_data)
+        image, voxels, camera, sequence = self.preprocess(raw_data)
 
         if self.augment:
             for channel in range(3):
                 image[channel, :, :] *= random.uniform(0.6, 1.4)
             image = np.clip(image, 0.0, 1.0)
 
-        return image, voxels, camera, raw_data
+        return image, voxels, camera, raw_data, sequence
 
     def __add__(self, item):
         pass
@@ -89,7 +89,7 @@ class Data(torch_data.Dataset):
         image_xy_res = 200 * scale
 
         # Extract subject and camera name from an image name.
-        subject, _, camera, _ = decode_image_name(image_name)
+        subject, sequence, camera, _ = decode_image_name(image_name)
 
         # Crop RGB image.
         image_path = os.path.join(self.image_path, subject, image_name)
@@ -102,7 +102,7 @@ class Data(torch_data.Dataset):
         else:
             voxels = -1
 
-        return T(image), voxels, camera
+        return T(image), voxels, camera, sequence
 
     def _get_crop_image(self, image_path, center, scale, angle, resolution=256):
         image = Image.open(image_path)
