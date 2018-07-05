@@ -24,6 +24,10 @@ def conv1_block(in_channel, out_channel, is_bias=False):
         nn.Conv2d(in_channel, out_channel, 1, bias=is_bias))
 
 
+def identity(x):
+    return x
+
+
 # residual block
 class ResBlock(nn.Module):
     def __init__(self, in_channels, out_channels=None):
@@ -33,25 +37,53 @@ class ResBlock(nn.Module):
 
         self.conv_block = conv_block(in_channels, out_channels)
 
-        self.skip_layer = None
+        self.skip_layer = identity
         if in_channels != out_channels:
             self.skip_layer = nn.Conv2d(in_channels, out_channels, 1)
 
     def forward(self, x):
         out = self.conv_block(x)
-        out = torch.add(out, self.skip_layer(x) if self.skip_layer is not None else x)
+        out = torch.add(out, self.skip_layer(x))  # if self.skip_layer is not None else x)
+
         return out
+
+
+class ConcatBlocks(nn.Module):
+    def __init__(self, size, in_channels, out_channels, feature):
+        if size < 2:
+            raise ValueError("size of ConcatBlocks must be greater than 2")
+
+        super(ConcatBlocks, self).__init__()
+
+        self.layer = nn.ModuleList([ResBlock(in_channels, feature)])
+        for _ in range(size - 2):
+            self.layer.append(ResBlock(feature, feature))
+        self.layer.append(ResBlock(feature, out_channels))
+
+    def forward(self, x):
+        for ly in self.layer:
+            x = ly(x)
+
+        return x
 
 
 # hourglass
 class Hourglass(nn.Module):
-    def __init__(self, size, channels):
+    def __init__(self, size, in_channels, out_channels, feature=256):
         super(Hourglass, self).__init__()
         self.size = size
-        self.up_layers = nn.ModuleList([ResBlock(channels) for _ in range(self.size)])
-        self.low1_layers = nn.ModuleList([ResBlock(channels) for _ in range(self.size)])
-        self.low2 = ResBlock(channels)
-        self.low3_layers = nn.ModuleList([ResBlock(channels) for _ in range(self.size)])
+
+        self.up_layers = nn.ModuleList([ConcatBlocks(3, in_channels, out_channels, feature)])
+        for _ in range(self.size - 1):
+            self.up_layers.append(ConcatBlocks(3, feature, out_channels, feature))
+
+        self.low1_layers = nn.ModuleList([ConcatBlocks(3, in_channels, feature, feature)])
+        for _ in range(self.size - 1):
+            self.low1_layers.append(ConcatBlocks(3, feature, feature, feature))
+
+        self.low2 = ResBlock(feature, out_channels)
+        self.low3_layers = nn.ModuleList([ResBlock(out_channels, out_channels) for _ in range(self.size)])
+
         self.max_pool = nn.MaxPool2d(2, 2)
         self.up_sample = nn.Upsample(scale_factor=2, mode='nearest')
 
@@ -77,60 +109,81 @@ class StackedHourglass(nn.Module):
     def __init__(self, voxel_z_resolutions, features, num_parts, internal_size=4):
         super(StackedHourglass, self).__init__()
         self.voxel_z_resolutions = voxel_z_resolutions
-        self.features = features
+        # self.features = features
         self.num_parts = num_parts
         self.internale_size = internal_size
 
         # initial processing
-        self.init_conv = nn.Sequential(
+        self.init_conv1 = nn.Sequential(
             nn.Conv2d(3, 64, 7, stride=2, padding=3, bias=False),  # 128
-            # nn.BatchNorm2d(64),
-            # nn.ReLU(),
             ResBlock(64, 128),
-            nn.MaxPool2d(2),  # 64
+            nn.MaxPool2d(2))  # 64
+        self.init_conv2 = nn.Sequential(
             ResBlock(128, 128),
-            ResBlock(128, self.features))
+            ResBlock(128, 128),
+            ResBlock(128, 256))
 
         # residual layer
-        self.hourglasses = nn.ModuleList(
-            [Hourglass(self.internale_size, self.features) for _ in self.voxel_z_resolutions])
+        self.hourglasses = nn.ModuleList([
+            Hourglass(self.internale_size, in_channels=256, out_channels=512),
+            Hourglass(self.internale_size, in_channels=256 + 128, out_channels=512),
+            Hourglass(self.internale_size, in_channels=256 + 256, out_channels=512),
+            Hourglass(self.internale_size, in_channels=256 + 256, out_channels=512)])
+
         self.prev_intermediate_layers = nn.ModuleList([
-            nn.Sequential(ResBlock(self.features, self.features),
-                          conv1_block(self.features, self.features)) for _ in self.voxel_z_resolutions])
-        self.voxel_intermediate_layers = nn.ModuleList(
-            [conv1_block(self.features, self.num_parts * voxel_z_resolution, is_bias=True)
-             for voxel_z_resolution in self.voxel_z_resolutions])
-        self.after_intermediate_layers = nn.ModuleList(
-            [conv1_block(self.num_parts * voxel_z_resolution, self.features)
-             for voxel_z_resolution in self.voxel_z_resolutions[:-1]])
-        self.skip_intermediate_layers = nn.ModuleList(
-            [conv1_block(self.features, self.features) for _ in self.voxel_z_resolutions[:-1]])
+            nn.Sequential(conv1_block(512, 512), conv1_block(512, 256)),
+            nn.Sequential(conv1_block(512, 512), conv1_block(512, 256)),
+            nn.Sequential(conv1_block(512, 512), conv1_block(512, 256)),
+            nn.Sequential(conv1_block(512, 512), conv1_block(512, 512))])
+
+        self.voxel_intermediate_layers = nn.ModuleList([
+            conv1_block(256, self.num_parts * self.voxel_z_resolutions[0], is_bias=True),
+            conv1_block(256, self.num_parts * self.voxel_z_resolutions[1], is_bias=True),
+            conv1_block(256, self.num_parts * self.voxel_z_resolutions[2], is_bias=True),
+            conv1_block(512, self.num_parts * self.voxel_z_resolutions[3], is_bias=True)])
+
+        self.after_intermediate_layers = nn.ModuleList([
+            conv1_block(self.num_parts * self.voxel_z_resolutions[0], 256 + 128),
+            conv1_block(self.num_parts * self.voxel_z_resolutions[1], 256 + 256),
+            conv1_block(self.num_parts * self.voxel_z_resolutions[2], 256 + 256)])
+
+        self.skip_intermediate_layers = nn.ModuleList([
+            conv1_block(256 + 128, 256 + 128),
+            conv1_block(256 + 256, 256 + 256),
+            conv1_block(256 + 256, 256 + 256)])
 
     def forward(self, x):  # x dim: [BCHW]
-        init_conv = self.init_conv(x)
+        init_conv1 = self.init_conv1(x)
+        init_conv2 = self.init_conv2(init_conv1)
 
-        inter = init_conv
         out_voxels = list()
         layers = zip(self.hourglasses,
                      self.prev_intermediate_layers,
                      self.voxel_intermediate_layers,
                      self.after_intermediate_layers,
                      self.skip_intermediate_layers)
-        for hg, prev, voxel, after, skip in layers:  # loop over (num_stack - 1)
-            prev_inter = inter
 
-            hg = hg(inter)
+        _input = init_conv2
+        inter = init_conv1
+
+        for hg, prev, voxel, after, skip in layers:  # loop over (num_stack - 1)
+            # prev_inter = inter
+
+            hg = hg(_input)
             prev = prev(hg)
             voxel = voxel(prev)  # BCHW
             after = after(voxel)
-            skip = skip(prev)
 
-            inter = prev_inter + after + skip
+            concat = torch.cat((prev, inter), 1)
+            skip = skip(concat)
+
+            _input = skip + after
+            inter = prev
 
             # stacking intermediate heatmaps for intermediate supervision
             out_voxels.append(voxel)
 
-        hg = self.hourglasses[-1](inter)
+        hg = self.hourglasses[-1](_input)
         prev = self.prev_intermediate_layers[-1](hg)
         voxel = self.voxel_intermediate_layers[-1](prev)
         out_voxels.append(voxel)
