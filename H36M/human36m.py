@@ -71,19 +71,20 @@ class Human36m(torch_data.Dataset):
         image_name = raw_data[str(Annotation.Image)]
         center = raw_data[str(Annotation.Center)]
         scale = raw_data[str(Annotation.Scale)]
-        image_xy_res = 200 * scale
         angle = 0
-
-        # Extract subject and camera name from an image name.
-        subject, _, camera, _ = decode_image_name(image_name)
 
         # Data augmentation.
         if self.task == str(Task.Train) and self.augment:
             scale = scale * 2 ** rand(0.25) * 1.25
             angle = rand(30) if random.random() <= 0.4 else 0
 
+        image_xy_res = 200 * scale
+
+        # Extract subject and camera name from an image name.
+        subject, _, camera, _ = decode_image_name(image_name)
+
         # Crop RGB image.
-        image_path = os.path.join(self.image_path, subject, image_name)
+        image_path = os.path.join(self.image_path, image_name)
         image = self._get_crop_image(image_path, center, scale, angle)
 
         if self.task == str(Task.Train):
@@ -207,4 +208,3 @@ class Human36m(torch_data.Dataset):
             vx[j, z_dst_slice, y_dst_slice, x_dst_slice] = g[z_src_slice, y_src_slice, x_src_slice]
 
         return voxels
-
