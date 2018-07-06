@@ -1,27 +1,24 @@
-import h5py
 import os
 
 import numpy as np
-import scipy.io
 import torch
 import torch.nn as nn
+import scipy.io
 from dotmap import DotMap
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 from visdom import Visdom
 
 import H36M
-from H36M.task import Task
 from H36M.annotation import Annotation
-from demo import draw_merged_image
+from H36M.task import Task
+from demo import get_merged_image
 from hourglass import StackedHourglass
 from log import log
 
-viz = Visdom()
-
 config = DotMap({
-    "annotation_path": "/media/nulledge/2nd/data/Human3.6M/converted/annot",
-    "image_path": "/media/nulledge/2nd/data/Human3.6M/converted/",
+    "annotation_path": "./Human3.6M/converted/annot",
+    "image_path": "./Human3.6M/converted",
     "pretrained_path": "./pretrained/",
     "subjects": [1, 5, 6, 7, 8, 9, 11],
     "task": str(Task.Valid),
@@ -29,10 +26,12 @@ config = DotMap({
     "heatmap_xy_coefficient": 2,
     "voxel_xy_resolution": 64,
     "voxel_z_resolutions": [1, 2, 4, 64],
-    "batch": 12,
+    "batch": 6,
     "workers": 8,
     "epoch": 100
 })
+
+viz = Visdom(env='sangbin')
 
 log.info('Reboot ')
 
@@ -41,7 +40,7 @@ log.debug(config)
 log.info('Loading Human3.6M data...')
 
 loader = DataLoader(
-    H36M.Data(
+    H36M.Human36m(
         image_path=config.image_path,
         subjects=config.subjects,
         task=str(Task.Valid),
@@ -58,7 +57,7 @@ log.info('load complete.')
 
 log.info('Creating model...')
 model = StackedHourglass(config.voxel_z_resolutions, 256, config.num_parts)
-optimizer = torch.optim.RMSprop(model.parameters(), lr=2.5e-4)
+# optimizer = torch.optim.RMSprop(model.parameters(), lr=2.5e-4)
 step = np.zeros([1], dtype=np.uint32)
 log.info('Done')
 
@@ -89,7 +88,9 @@ device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 log.info('set device: %s' % device)
 model = model.to(device)
 optimizer = torch.optim.RMSprop(model.parameters(), lr=2.5e-4)
-# optimizer.load_state_dict(pretrained_model['optimizer'])
+
+if pretrained_model is not None:
+    optimizer.load_state_dict(pretrained_model['optimizer'])
 
 criterion = nn.MSELoss()
 
@@ -132,6 +133,7 @@ for epoch in range(pretrained_epoch + 1, pretrained_epoch + 1 + config.epoch):
 
                     voxel_cpu = voxels[-1]
                     for idx, voxel in enumerate(voxels):
+                        print(voxel.shape)
                         voxels[idx] = voxel.to(device).view(-1,
                                                             config.num_parts * config.voxel_z_resolutions[idx],
                                                             config.voxel_xy_resolution,
@@ -147,15 +149,15 @@ for epoch in range(pretrained_epoch + 1, pretrained_epoch + 1 + config.epoch):
                         output_cpu = outputs[-1].view(config.batch, config.num_parts, config.voxel_z_resolutions[-1],
                                                       config.voxel_xy_resolution,
                                                       config.voxel_xy_resolution).cpu().detach()
-                        draw_merged_image(output_cpu, images_cpu.numpy(), 'train')
-                        draw_merged_image(voxel_cpu, images_cpu.numpy(), 'gt')
+
+                        viz.images(tensor=get_merged_image(output_cpu, images_cpu.numpy()), nrow=3, win='train')
+                        viz.images(tensor=get_merged_image(voxel_cpu, images_cpu.numpy()), nrow=3, win='gt')
 
                     step = step + 1
                     progress.update(1)
 
                 # 3D pose reconstruction.
                 elif config.task == str(Task.Valid):
-
                     fine_results = outputs[-1]
                     z_res = config.voxel_z_resolutions[-1]
                     x_res = y_res = config.voxel_xy_resolution
