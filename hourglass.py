@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 
 # convolutional block: full pre-activation
@@ -85,7 +86,7 @@ class Hourglass(nn.Module):
         self.low3_layers = nn.ModuleList([ResBlock(out_channels, out_channels) for _ in range(self.size)])
 
         self.max_pool = nn.MaxPool2d(2, 2)
-        self.up_sample = nn.Upsample(scale_factor=2, mode='nearest')
+        self.up_sample = lambda x: F.interpolate(x, scale_factor=2, mode='nearest')
 
     def forward(self, x):
         l1 = x
@@ -105,11 +106,10 @@ class Hourglass(nn.Module):
         return out
 
 
-class StackedHourglass(nn.Module):
-    def __init__(self, voxel_z_resolutions, features, num_parts, internal_size=4):
-        super(StackedHourglass, self).__init__()
+class CoarseToFine(nn.Module):
+    def __init__(self, voxel_z_resolutions, num_parts, internal_size=4):
+        super(CoarseToFine, self).__init__()
         self.voxel_z_resolutions = voxel_z_resolutions
-        # self.features = features
         self.num_parts = num_parts
         self.internale_size = internal_size
 

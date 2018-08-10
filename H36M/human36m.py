@@ -4,28 +4,31 @@ import os
 import pickle
 import random
 
-import cv2
 import numpy as np
 import torch
 import torch.utils.data as torch_data
 from PIL import Image
-from torchvision import transforms
+from torchvision import transforms as T
 from vectormath import Vector2
+from random import shuffle
 
-from H36M.util import decode_image_name, rand, gaussian_3d
-from .annotation import annotations, Annotation
-from .task import tasks, Task
-
-T = transforms.Compose([
-    transforms.ColorJitter(0.3, 0.3, 0.3, 0.3),
-    transforms.ToTensor()
-])
+from H36M.util import rand, gaussian_3d
+from .annotation import Annotation
 
 
 class Human36m(torch_data.Dataset):
     def __init__(self, image_path, subjects, task, joints,
-                 heatmap_xy_coefficient, voxel_xy_resolution, voxel_z_resolutions, augment):
-        self.voxel_z_res_list = torch.FloatTensor(voxel_z_resolutions)
+                 heatmap_xy_coefficient,
+                 voxel_xy_resolution,
+                 voxel_z_resolutions,
+                 augment,
+                 num_split=None):
+        self.SCALE_FACTOR = 0.20
+        self.ROTATE_DEGREE = 30
+        self.ROTATE_PROB = 0.4
+        self.HORIZONTAL_FLIP_PROB = 0.5
+
+        self.voxel_z_res_list = torch.IntTensor(voxel_z_resolutions)
         self.voxel_xy_res = voxel_xy_resolution
         self.heatmap_xy_coeff = heatmap_xy_coefficient
         self.task = task
@@ -33,10 +36,13 @@ class Human36m(torch_data.Dataset):
         self.joints = joints
         self.image_path = image_path
         self.augment = augment
+        self.num_split = num_split
+        self.current_split_set = 0
 
         # initialize
+        self.z_list = self.voxel_z_res_list.to(torch.float)
         self.heatmap_z_coeff = 2 * torch.floor(
-            (6 * self.heatmap_xy_coeff * self.voxel_z_res_list / self.voxel_z_res_list[-1] + 1) / 2) + 1
+            (6 * self.heatmap_xy_coeff * self.z_list / self.z_list[-1] + 1) / 2) + 1
 
         self.gaussians = list()
         for z_coeff in self.heatmap_z_coeff:
@@ -45,74 +51,91 @@ class Human36m(torch_data.Dataset):
 
         self.voxels = list()
         for z_res in self.voxel_z_res_list:
+            # z_res = z_res.to(torch.int)
             vx = torch.zeros(self.joints, z_res, self.voxel_xy_res, self.voxel_xy_res)
             self.voxels.append(vx)
 
-        # read dataset appendix
-        self.data = dict()
-        for task in tasks:
-            self.data[str(task)] = pickle.load(open("./%s.bin" % task, 'rb'))
+        annot_data = pickle.load(open("./180809_%s_list_fix.bin" % task, 'rb'))
+
+        if self.num_split is None:
+            self.data = [annot_data]
+        else:
+            # split whole data into n-sized chunks
+            print("Data split mode is enabled. You should call change_current_split_set after epoch")
+
+            def chunks(l, n):
+                """Yield successive n-sized chunks from l."""
+                for i in range(0, len(l), n):
+                    yield l[i:i + n]
+
+            shuffle(annot_data)
+            self.data = list(chunks(annot_data, num_split))
+            print("Human3.6m is splited into %d-sized %d chunks"
+                  % (self.num_split, len(self.data)))
 
     def __len__(self):
-        return len(self.data[str(self.task)][str(Annotation.Image)])
+        return len(self.data[self.current_split_set])
 
     def __getitem__(self, index):
-        raw_data = dict()
-        for annotation in [Annotation.Image] + annotations[str(self.task)]:
-            raw_data[str(annotation)] = self.data[str(self.task)][str(annotation)][index]
-            if annotation is Annotation.Center: # and self.task is str(Task.Valid)
-                raw_data[str(annotation)] = np.asarray([raw_data[str(annotation)].x, raw_data[str(annotation)].y])
+        raw_data = self.data[self.current_split_set][index]
 
-        image, voxels, camera, sequence = self.preprocess(raw_data)
+        image, voxels = self._preprocess(raw_data, augment=self.augment)
 
-        if self.augment:
-            for channel in range(3):
-                image[channel, :, :] *= random.uniform(0.6, 1.4)
-            image = np.clip(image, 0.0, 1.0)
-
-        return image, voxels, camera, raw_data, sequence
+        return image, voxels, raw_data
 
     def __add__(self, item):
         pass
 
-    def preprocess(self, raw_data):
+    def _preprocess(self, raw_data, augment=False):
         # Common annotations for training and validation.
-        image_name = raw_data[str(Annotation.Image)]
-        center = raw_data[str(Annotation.Center)]
-        scale = raw_data[str(Annotation.Scale)]
-        angle = 0
+        image_name = raw_data[Annotation.IMG]
+        center = raw_data[Annotation.CENTER]
+        zind = np.clip(raw_data[Annotation.ZIDX], 1, 64)
+        part = raw_data[Annotation.PART]
+        scale = raw_data[Annotation.SCALE] * 1.25
 
-        # Data augmentation.
-        if self.task == str(Task.Train) and self.augment:
-            scale = scale * 2 ** rand(0.25) * 1.25
-            angle = rand(30) if random.random() <= 0.4 else 0
+        # Calculate augmentation params.
+        angle, is_hflip, transform = 0, False, list()
+        if augment:
+            scale = scale * random.uniform(1 - self.SCALE_FACTOR, 1 + self.SCALE_FACTOR)
+            angle = rand(self.ROTATE_DEGREE) if random.random() < self.ROTATE_PROB else 0
+            if random.random() < self.HORIZONTAL_FLIP_PROB:
+                is_hflip = True
+                # calculate flipped positions
+                for jt in part:
+                    jt[0] = jt[0] + 2 * (center[0] - jt[0])
 
+                # swap the index of joint, pelvis[0], spine[7,8,9,10]
+                swap_part = np.copy(part)
+                swap_part[1:4] = part[4:7]
+                swap_part[4:7] = part[1:4]
+                swap_part[11:14] = part[14:17]
+                swap_part[14:17] = part[11:14]
+                part = swap_part
+
+            transform.append(T.ColorJitter(0.3, 0.3, 0.3, 0.3))
+
+        transform.append(T.ToTensor())
+        transform = T.Compose(transform)
         image_xy_res = 200 * scale
 
-        # Extract subject and camera name from an image name.
-        subject, sequence, camera, _ = decode_image_name(image_name)
+        # get image and labels (voxels)
+        image_path = os.path.join(self.image_path, image_name)
+        image = self._get_augment_image(image_path, center, scale,
+                                        angle, is_hflip, transform)
+        voxels = self._get_voxels(part, center, image_xy_res, angle, zind)
 
-        # Crop RGB image.
-        image_path = os.path.join(self.image_path, subject, image_name)
-        image = self._get_crop_image(image_path, center, scale, angle)
+        return image, voxels
 
-        if self.task == str(Task.Train):
-            zind = np.clip(raw_data[str(Annotation.Z)], 1, 64)
-            part = raw_data[str(Annotation.Part)]
-            voxels = self._get_voxels(part, center, image_xy_res, angle, zind)
-        else:
-            voxels = -1
-
-        return T(image), voxels, camera, sequence
-
-    def _get_crop_image(self, image_path, center, scale, angle, resolution=256):
+    @staticmethod
+    def _get_augment_image(image_path, center, scale,
+                           angle=0, hflip=False, transform=None, target_res=256):
         image = Image.open(image_path)
 
         width, height = image.size
         center = Vector2(center)  # assign new array
 
-        # scale = scale * 1.25
-        crop_ratio = 200 * scale / resolution
+        crop_ratio = 200 * scale / target_res
 
         if crop_ratio >= 2:  # if box size is greater than two time of resolution px
             # scale down image
@@ -132,7 +155,7 @@ class Human36m(torch_data.Dataset):
         br = (center + 200 * scale / 2).astype(int)  # Vector2
 
         if crop_ratio >= 2:  # force image size 256 x 256
-            br -= (br - ul - resolution)
+            br -= (br - ul - target_res)
 
         pad_length = math.ceil(((ul - br).length - (br.x - ul.x)) / 2)
 
@@ -147,13 +170,20 @@ class Human36m(torch_data.Dataset):
         new_image = Image.new("RGB", (br.x - ul.x, br.y - ul.y))
         new_image.paste(crop_image, box=crop_dst)
 
+        if hflip:
+            new_image = new_image.transpose(Image.FLIP_LEFT_RIGHT)
+
         if angle != 0:
             new_image = new_image.rotate(angle, resample=Image.BILINEAR)
             new_image = new_image.crop(box=(pad_length, pad_length,
-                                            new_image.width - pad_length, new_image.height - pad_length))
+                                            new_image.width - pad_length,
+                                            new_image.height - pad_length))
 
         if crop_ratio < 2:
-            new_image = new_image.resize((resolution, resolution), Image.BILINEAR)
+            new_image = new_image.resize((target_res, target_res), Image.BILINEAR)
+
+        if transform is not None:
+            new_image = transform(new_image)
 
         return new_image
 
@@ -181,7 +211,7 @@ class Human36m(torch_data.Dataset):
             xy[:, 1] = y
             xy = xy + self.voxel_xy_res / 2
 
-        zidx = torch.ceil(zidx.unsqueeze(-1) * self.voxel_z_res_list / self.voxel_z_res_list[-1]) - 1
+        zidx = torch.ceil(zidx.unsqueeze(-1) * self.z_list / self.z_list[-1]) - 1
         zidx = zidx.short().t()
         zpad = torch.floor(self.heatmap_z_coeff / 2).short()
 
@@ -201,19 +231,25 @@ class Human36m(torch_data.Dataset):
             zdsts.append(zdst)
             zsrcs.append(zsrc)
 
-        for (vx, zdst, zsrc, g), j in itertools.product(zip(voxels, zdsts, zsrcs, self.gaussians),
-                                                        range(self.joints)):
-            if xy[j, 0] < 0 or self.voxel_xy_res <= xy[j, 0] or \
-                    xy[j, 1] < 0 or self.voxel_xy_res <= xy[j, 1]:
+        for (vx, zdst, zsrc, g), jt in itertools.product(zip(voxels, zdsts, zsrcs, self.gaussians),
+                                                         range(self.joints)):
+            if xy[jt, 0] < 0 or self.voxel_xy_res <= xy[jt, 0] or \
+                    xy[jt, 1] < 0 or self.voxel_xy_res <= xy[jt, 1]:
                 continue
-            z_dst_slice = slice(zdst[0][j], zdst[1][j])
-            y_dst_slice = slice(dst[0][j, 1], dst[1][j, 1])
-            x_dst_slice = slice(dst[0][j, 0], dst[1][j, 0])
 
-            z_src_slice = slice(zsrc[0][j], zsrc[1][j])
-            y_src_slice = slice(src[0][j, 1], src[1][j, 1])
-            x_src_slice = slice(src[0][j, 0], src[1][j, 0])
+            z_dst_slice = slice(zdst[0][jt], zdst[1][jt])
+            y_dst_slice = slice(dst[0][jt, 1], dst[1][jt, 1])
+            x_dst_slice = slice(dst[0][jt, 0], dst[1][jt, 0])
 
-            vx[j, z_dst_slice, y_dst_slice, x_dst_slice] = g[z_src_slice, y_src_slice, x_src_slice]
+            z_src_slice = slice(zsrc[0][jt], zsrc[1][jt])
+            y_src_slice = slice(src[0][jt, 1], src[1][jt, 1])
+            x_src_slice = slice(src[0][jt, 0], src[1][jt, 0])
+
+            vx[jt, z_dst_slice, y_dst_slice, x_dst_slice] = g[z_src_slice, y_src_slice, x_src_slice]
 
         return voxels
+
+    def change_current_split_set(self):
+        self.current_split_set = self.current_split_set + 1
+        if self.current_split_set > len(self.data):
+            self.current_split_set = 0
