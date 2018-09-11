@@ -12,6 +12,7 @@ from torchvision import transforms as T
 from vectormath import Vector2
 from random import shuffle
 
+from H36M import Task
 from H36M.util import rand, gaussian_3d
 from .annotation import Annotation
 
@@ -55,23 +56,26 @@ class Human36m(torch_data.Dataset):
             vx = torch.zeros(self.joints, z_res, self.voxel_xy_res, self.voxel_xy_res)
             self.voxels.append(vx)
 
-        annot_data = pickle.load(open("./180809_%s_list_fix.bin" % task, 'rb'))
+        self.annot_data = pickle.load(open("./180809_%s_list_fix.bin" % task, 'rb'))
 
-        if self.num_split is None:
-            self.data = [annot_data]
+        if self.num_split is None or self.task is Task.Valid:
+            self.data = [self.annot_data]
         else:
             # split whole data into n-sized chunks
             print("Data split mode is enabled. You should call change_current_split_set after epoch")
+            self._shuffle_and_split()
 
-            def chunks(l, n):
-                """Yield successive n-sized chunks from l."""
-                for i in range(0, len(l), n):
-                    yield l[i:i + n]
+    def _shuffle_and_split(self):
+        def chunks(l, n):
+            """Yield successive n-sized chunks from l."""
+            for i in range(0, len(l), n):
+                yield l[i:i + n]
 
-            shuffle(annot_data)
-            self.data = list(chunks(annot_data, num_split))
-            print("Human3.6m is splited into %d-sized %d chunks"
-                  % (self.num_split, len(self.data)))
+        shuffle(self.annot_data)
+        num_ = int(len(self.annot_data) / self.num_split) + 1
+        self.data = list(chunks(self.annot_data, num_))
+        print("Human3.6m dataset is shuffled and splited into %d-sized %d chunks"
+              % (num_, len(self.data)))
 
     def __len__(self):
         return len(self.data[self.current_split_set])
@@ -92,12 +96,12 @@ class Human36m(torch_data.Dataset):
         center = raw_data[Annotation.CENTER]
         zind = np.clip(raw_data[Annotation.ZIDX], 1, 64)
         part = raw_data[Annotation.PART]
-        scale = raw_data[Annotation.SCALE] * 1.25
+        scale = raw_data[Annotation.SCALE]  # * 1.25
 
         # Calculate augmentation params.
         angle, is_hflip, transform = 0, False, list()
         if augment:
-            scale = scale * random.uniform(1 - self.SCALE_FACTOR, 1 + self.SCALE_FACTOR)
+            scale = scale * random.uniform(1 - self.SCALE_FACTOR, 1 + self.SCALE_FACTOR) * 1.25
             angle = rand(self.ROTATE_DEGREE) if random.random() < self.ROTATE_PROB else 0
             if random.random() < self.HORIZONTAL_FLIP_PROB:
                 is_hflip = True
@@ -106,12 +110,15 @@ class Human36m(torch_data.Dataset):
                     jt[0] = jt[0] + 2 * (center[0] - jt[0])
 
                 # swap the index of joint, pelvis[0], spine[7,8,9,10]
-                swap_part = np.copy(part)
-                swap_part[1:4] = part[4:7]
-                swap_part[4:7] = part[1:4]
-                swap_part[11:14] = part[14:17]
-                swap_part[14:17] = part[11:14]
-                part = swap_part
+                swap_indices = [0, 4, 5, 6, 1, 2, 3, 7, 8, 9, 10, 14, 15, 16, 11, 12, 13]
+                part = np.take(part, indices=swap_indices, axis=0)
+                zind = np.take(zind, indices=swap_indices, axis=0)
+                # swap_part = np.copy(part)
+                # swap_part[1:4] = part[4:7]
+                # swap_part[4:7] = part[1:4]
+                # swap_part[11:14] = part[14:17]
+                # swap_part[14:17] = part[11:14]
+                # part = swap_part
 
             transform.append(T.ColorJitter(0.3, 0.3, 0.3, 0.3))
 
@@ -251,5 +258,6 @@ class Human36m(torch_data.Dataset):
 
     def change_current_split_set(self):
         self.current_split_set = self.current_split_set + 1
-        if self.current_split_set > len(self.data):
+        if self.current_split_set >= len(self.data):
+            self._shuffle_and_split()
             self.current_split_set = 0
